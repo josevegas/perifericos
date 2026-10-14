@@ -76,9 +76,9 @@ namespace PuntoVenta.Services
         }
 
         /// <summary>
-        /// Deja el servicio PCL levantado si aún no lo está. Idempotente y a
-        /// prueba de equipo ausente: se llama al arrancar la aplicación para que el
-        /// enlace ya esté vivo cuando el islero llegue a cobrar.
+        /// Deja el servicio PCL levantado y el equipo pareado si aún no lo están.
+        /// Idempotente y a prueba de equipo ausente: se llama al arrancar la
+        /// aplicación para que el enlace ya esté vivo cuando el islero llegue a cobrar.
         /// </summary>
         public static void AsegurarServicioEnSegundoPlano()
         {
@@ -88,6 +88,11 @@ namespace PuntoVenta.Services
                 {
                     var servicio = new PinpadService();
                     if (!servicio.EstaConectado()) servicio.Conectar();
+
+                    // Un equipo recién pareado no siempre aparece en serverStatus
+                    // sin volver a levantar la sesión, así que se reintenta.
+                    if (servicio.AsegurarEquipoPareado() && !servicio.EstaConectado())
+                        servicio.Conectar();
                 }
                 catch (DllNotFoundException)
                 {
@@ -100,7 +105,9 @@ namespace PuntoVenta.Services
             });
         }
 
-        /// <summary>Arranca el servicio PCL (la sesión con el equipo pareado).</summary>
+        /// <summary>
+        /// Arranca el servicio PCL (la sesión con el equipo pareado). Idempotente.
+        /// </summary>
         public bool Conectar()
         {
             // Bitácora interna de la DLL de Ingenico: escribe SU propio log con
@@ -108,7 +115,30 @@ namespace PuntoVenta.Services
             try { PCLdll.enableDebugLog(true); } catch { }
             bool ok = PCLdll.startPclService();
             Log("startPclService=" + ok);
+
+            // startPclService devuelve FALSE cuando el servicio YA estaba arriba, y
+            // en ese caso el canal está sano: comprobado sobre el equipo real, con
+            // un segundo startPclService la transacción de prueba sigue aprobando.
+            // Quedarse con ese FALSE abortaba el cobro con un "no se pudo conectar"
+            // falso, que es justo lo que pasaba en el primer cobro tras el arranque
+            // del host. El servicio tampoco reporta listo al instante, así que se
+            // le da un margen antes de darlo por caído.
+            if (!ok) ok = EsperarCanal(TimeSpan.FromSeconds(3));
             return ok;
+        }
+
+        /// <summary>
+        /// Espera a que serverStatus reporte el canal listo (arranque del servicio).
+        /// </summary>
+        private bool EsperarCanal(TimeSpan limite)
+        {
+            DateTime fin = DateTime.UtcNow + limite;
+            while (true)
+            {
+                if (EstaConectado()) return true;
+                if (DateTime.UtcNow >= fin) return false;
+                System.Threading.Thread.Sleep(200);
+            }
         }
 
         /// <summary>
@@ -177,6 +207,39 @@ namespace PuntoVenta.Services
         public bool ActivarUsb(string puerto)
         {
             return PCLdll.activateUSBDevice(puerto);
+        }
+
+        /// <summary>
+        /// Parea el primer equipo Ingenico visible que todavía no lo esté.
+        /// </summary>
+        /// <remarks>
+        /// La activación es un paso único por máquina que PCL guarda en su propia
+        /// configuración. Sin él el terminal aparece enchufado en ListarUsb() pero
+        /// serverStatus no reporta canal y NINGUNA transacción responde: eso es
+        /// exactamente lo que se veía en una caja recién instalada, y no lo hacía
+        /// nadie. Si ya hay un equipo activado no se toca nada.
+        /// </remarks>
+        public bool AsegurarEquipoPareado()
+        {
+            try
+            {
+                foreach (EquipoUsb equipo in ListarUsb())
+                {
+                    if (equipo.Activado || string.IsNullOrEmpty(equipo.Puerto)) continue;
+                    bool ok = ActivarUsb(equipo.Puerto);
+                    Log("activateUSBDevice(" + equipo.Puerto + ")=" + ok);
+                    if (ok) return true;
+                }
+            }
+            catch (DllNotFoundException)
+            {
+                // Caja sin pinpad: no hay nada que parear.
+            }
+            catch (Exception ex)
+            {
+                Log("Pareo del pinpad falló: " + ex.Message);
+            }
+            return false;
         }
 
         /// <summary>

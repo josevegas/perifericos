@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using PuntoVenta.Services;
 
 namespace PuntoVenta.Perifericos.Host
 {
@@ -18,6 +19,11 @@ namespace PuntoVenta.Perifericos.Host
 
             try
             {
+                // Deja el enlace del pinpad levantado —y lo parea si es una caja
+                // nueva— mientras se arranca el servicio HTTP. No bloquea: si no
+                // hay pinpad sólo queda anotado en pinpad.log.
+                PinpadService.AsegurarServicioEnSegundoPlano();
+
                 var host = new PerifericosHttpHost(token);
                 Console.WriteLine("Servicio de periféricos escuchando en http://127.0.0.1:5005/");
                 host.EjecutarAsync().GetAwaiter().GetResult();

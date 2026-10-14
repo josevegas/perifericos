@@ -29,6 +29,41 @@ if (!resultado.Aprobado)
 `CobroTarjetaResultado` conserva los datos del voucher y la respuesta cruda del
 equipo. El servicio consumidor decide cómo registrar y presentar el resultado.
 
+#### Conexión con el equipo
+
+El pinpad se conecta por USB y Windows lo expone como puerto serie (en la caja
+de referencia, `COM3`, con nombre `LANE3000-04224560`). El servicio PCL no
+arranca solo: `AsegurarServicioEnSegundoPlano()` levanta la sesión en segundo
+plano, y es lo que hace `SmartOne.Perifericos.Host.exe` al arrancar. Si no hay
+pinpad, sólo queda anotado en `pinpad.log` y el módulo sigue cargando.
+
+En una caja nueva hay un paso extra: PCL guarda el pareo del cable USB como
+configuración **por máquina**. Hasta que no se parea, el equipo aparece
+enchufado en `ListarUsb()` (`Activado = false`) pero `serverStatus` no reporta
+canal y ninguna transacción responde. No hace falta hacerlo a mano:
+`AsegurarServicioEnSegundoPlano()` activa el primer equipo visible sin parear.
+El pareo se puede forzar por separado:
+
+```csharp
+var pinpad = new PinpadService();
+pinpad.Conectar();
+pinpad.AsegurarEquipoPareado();   // parea el primer equipo visible sin parear
+// o, indicando el puerto concreto:
+pinpad.ActivarUsb("COM3");
+```
+
+Para saber si el enlace está realmente vivo, `EstaConectado()` es un primer
+filtro, pero la prueba definitiva es `LeerSerieDelEquipo()`: pide el número de
+serie por el canal PCL y sólo el equipo puede contestarlo. `ProbarEcoAsync()`
+va un paso más allá y lanza una transacción real contra la app de pago sin
+cobrar nada (operación 20), así que sirve para verificar el circuito completo
+sin tarjeta.
+
+`serverStatus` no reporta canal al instante: tras `Conectar()` puede tardar
+uno o dos segundos en dar el enlace por bueno. Por eso `Conectar()` es
+idempotente — si vuelve a llamarse con la sesión ya arriba, `startPclService`
+devuelve `false` y el módulo espera al canal antes de darlo por caído.
+
 ### Host local para FastAPI
 
 Compila `Host\SmartOne.Perifericos.Host.csproj` en Release x64 y ejecuta
@@ -228,6 +263,11 @@ cola térmica reconocible. No se usa la impresora predeterminada.
   `nativas`. Son dependencias nativas y no se cargan desde el ensamblado .NET.
 - Instalar la impresora térmica en Windows. El módulo envía comandos ESC/POS
   en modo RAW a la cola indicada.
+- Enchufar el pinpad por USB y encenderlo. Windows debe publicarlo como puerto
+  serie. No hay que parearlo a mano: `AsegurarServicioEnSegundoPlano()` lo hace
+  en el primer arranque y PCL recuerda el pareo en esa máquina. Para comprobar
+  una caja recién instalada sin tarjeta, ver
+  [Conexión con el equipo](#conexión-con-el-equipo).
 - Llevar el `SmartOne.Perifericos.Host.exe.config` junto al ejecutable y poner
   ahí el nombre exacto de la cola térmica en `impresora_ticket`. Si se edita el
   `.exe.config` ya copiado, `MSBuild` no lo vuelve a sobrescribir en la
