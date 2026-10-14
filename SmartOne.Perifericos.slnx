@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="SmartOne.Perifericos.csproj" Id="c1db0068-e804-4195-9f33-6fa5044af2ad" />
+  <Project Path="Host\SmartOne.Perifericos.Host.csproj" />
+</Solution>
