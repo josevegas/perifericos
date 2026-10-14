@@ -2,12 +2,11 @@ using PuntoVenta.Models.Pinpad;
 using PuntoVenta.Services;
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Text;
-using System.Web.Script.Serialization;
 using System.Threading.Tasks;
+using System.Web.Script.Serialization;
 
 namespace PuntoVenta.Perifericos.Host
 {
@@ -38,7 +37,11 @@ namespace PuntoVenta.Perifericos.Host
             while (_listener.IsListening)
             {
                 HttpListenerContext contexto = await _listener.GetContextAsync().ConfigureAwait(false);
-                Task.Run(() => AtenderAsync(contexto));
+                _ = Task.Run(() => AtenderAsync(contexto)).ContinueWith(
+                    tarea => Console.Error.WriteLine(
+                        "Error no controlado del host local: " +
+                        tarea.Exception.GetBaseException().Message),
+                    TaskContinuationOptions.OnlyOnFaulted);
             }
         }
 
@@ -127,7 +130,9 @@ namespace PuntoVenta.Perifericos.Host
                 Console.Error.WriteLine("Error atendiendo solicitud de periféricos: " + ex);
                 try
                 {
-                    await ResponderAsync(contexto, 500, Error("Falló la operación local del pinpad."));
+                    await ResponderAsync(
+                        contexto, 500, Error("Falló la operación local del pinpad."))
+                        .ConfigureAwait(false);
                 }
                 catch (HttpListenerException)
                 {

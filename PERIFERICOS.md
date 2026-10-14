@@ -90,3 +90,7 @@ cola térmica reconocible. No se usa la impresora predeterminada.
   en modo RAW a la cola indicada.
 - La DLL PCL, sus runtimes de Visual C++ y la impresora son requisitos de la
   máquina que ejecuta el servicio, no del servidor remoto.
+- `PinpadService` escribe `pinpad.log` junto al ejecutable del proceso
+  consumidor (no en el directorio de trabajo). Trae el arranque del servicio
+  PCL y la trama de cada operación; es lo primero que se mira cuando el pinpad
+  no responde.

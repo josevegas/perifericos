@@ -57,6 +57,13 @@ namespace PuntoVenta.Services
         private static readonly TimeSpan EsperaCobro = TimeSpan.FromMinutes(2);
         private static readonly TimeSpan EsperaDiagnostico = TimeSpan.FromSeconds(30);
 
+        // Ruta absoluta a propósito: con la relativa el archivo caía en el
+        // directorio de trabajo del proceso, que en una tarea programada del
+        // Programador de tareas es C:\Windows\System32 — un lugar del que nadie
+        // lo va a sacar, y donde el append puede fallar en silencio.
+        private static readonly string RutaLog = System.IO.Path.Combine(
+            AppDomain.CurrentDomain.BaseDirectory, "pinpad.log");
+
         /// <summary>Hay una operación nativa colgada: no se lanza otra encima.</summary>
         private static volatile bool _operacionHuerfana;
         private static readonly SemaphoreSlim CandadoOperacion = new SemaphoreSlim(1, 1);
@@ -459,7 +466,7 @@ namespace PuntoVenta.Services
             try
             {
                 System.IO.File.AppendAllText(
-                    "pinpad.log",
+                    RutaLog,
                     DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff ") + linea + Environment.NewLine);
             }
             catch

@@ -1,0 +1,26 @@
+# Resultados de compilación
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio / MSBuild
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.cache
+*.pdb
+*.dll.config
+*.exe.config
+
+# Paquetes restaurados
+[Pp]ackages/
+
+# Bitácora del pinpad (la escribe PinpadService junto al ejecutable)
+pinpad.log
+
+# Sistema operativo
+[Dd]esktop.ini
+Thumbs.db

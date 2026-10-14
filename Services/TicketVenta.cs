@@ -42,7 +42,8 @@ namespace PuntoVenta.Services
     /// aunque la red se caiga justo después de registrar: a esa altura la
     /// boleta ya existe y el cliente está esperando su papel.
     ///
-    /// Ancho: 42 columnas, medido en la TM-T20III con papel de 80 mm.
+    /// Ancho: <see cref="EscPos.Columnas"/> columnas (fuente B sobre papel de
+    /// 80 mm), medido en la TM-T20III. Ver el porqué del número ahí.
     ///
     /// LO QUE EL TICKET NO TIENE, A PROPÓSITO: el código QR, el texto sobre el
     /// QR, "AUTORIZADO MEDIANTE RESOLUCIÓN" y la URL de validación. Esos cuatro
