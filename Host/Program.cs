@@ -18,7 +18,7 @@ namespace PuntoVenta.Perifericos.Host
 
             try
             {
-                var host = new PinpadHttpHost(token);
+                var host = new PerifericosHttpHost(token);
                 Console.WriteLine("Servicio de periféricos escuchando en http://127.0.0.1:5005/");
                 host.EjecutarAsync().GetAwaiter().GetResult();
             }

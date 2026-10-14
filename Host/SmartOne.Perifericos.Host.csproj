@@ -42,8 +42,10 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="Contratos.cs" />
     <Compile Include="Program.cs" />
-    <Compile Include="PinpadHttpHost.cs" />
+    <Compile Include="PerifericosHttpHost.cs" />
+    <None Include="App.config" />
     <Content Include="..\nativas\PCLService.dll">
       <Link>PCLService.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
