@@ -25,6 +25,9 @@ pinpad.log
 token.txt
 host.log
 
+# Paquetes de despliegue armados por Host\Despliegue\CrearPaquete.ps1
+dist/
+
 # Sistema operativo
 [Dd]esktop.ini
 Thumbs.db

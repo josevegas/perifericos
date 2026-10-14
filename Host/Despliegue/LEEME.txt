@@ -1,0 +1,147 @@
+﻿================================================================================
+ SmartOne.Perifericos.Host
+ Servicio local de periféricos para la caja
+================================================================================
+
+QUÉ ES ESTO
+  Un servicio que corre en la misma PC de la caja y escucha SÓLO en
+  127.0.0.1:5005. La API de FastAPI le pide por HTTP los cobros con pinpad y la
+  impresión de comprobantes. No abre nada hacia la red: no es un servicio
+  expuesto, no necesita reglas de firewall ni permisos de administrador.
+
+REQUISITOS DE LA CAJA
+  - Windows de 64 bits (el ejecutable es x64).
+  - .NET Framework 4.8. Viene de fábrica en Windows 10 1903 o superior.
+    Si falta: https://dotnet.microsoft.com/download/dotnet-framework/net48
+  - Pinpad Ingenico/Niubiz conectado por USB y encendido.
+  - Impresora térmica ESC/POS instalada en Windows.
+  - El token del servicio: el mismo valor que PERIFERICOS_TOKEN en FastAPI.
+
+INSTALACIÓN EN 3 PASOS
+  1. Copie ESTA CARPETA COMPLETA a la PC de la caja, por ejemplo a
+     C:\Perifericos. El .exe y las DLL no se separan nunca: las DLL nativas de
+     Ingenico tienen que quedar junto al ejecutable.
+
+  2. Si el paquete llegó dentro de un ZIP descargado de otra máquina o de
+     internet, Windows le pone "marca de bloqueo" a los scripts. Quítela antes
+     de instalar. En PowerShell, dentro de la carpeta:
+
+        Get-ChildItem | Unblock-File
+
+  3. Ejecute el instalador con el token de la caja:
+
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -Token "EL_TOKEN_DE_LA_CAJA"
+
+     Puede fijar la impresora a mano, si hay más de una:
+
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -Token "EL_TOKEN_DE_LA_CAJA" -Impresora "EPSON TM-T20II Receipt"
+
+  El instalador comprueba la máquina, escribe token.txt, registra el arranque
+  automático, levanta el servicio y hace la prueba de humo. Al final imprime un
+  informe con OK / AVISO / FALLO. Se puede volver a ejecutar las veces que haga
+  falta: es idempotente.
+
+QUÉ HACE EL INSTALADOR
+  1. Comprueba Windows x64 y .NET Framework 4.8.                    (bloqueante)
+  2. Comprueba que estén los 10 archivos del paquete.               (bloqueante)
+  3. Revisa la impresora térmica y el pinpad.                     (sólo aviso)
+  4. Si pasa -Impresora, la fija en impresora_ticket del .exe.config.
+  5. Escribe token.txt y registra la tarea programada de arranque automático.
+  6. Levanta el host y consulta /api/v1/impresion/estado y
+     /api/v1/pinpad/probar.
+
+  El pinpad y la impresora que falten son AVISO, no FALLO: la caja puede
+  instalarse sin ellos y conectarlos después. Lo que sí bloquea es una máquina
+  de 32 bits, la falta de .NET 4.8 o un archivo faltante.
+
+  En este momento el pinpad NO está conectado y no hay impresora térmica:
+  los pasos 3, 4 y 6 saldrán como AVISO. Es lo esperado.
+
+  Si algo sale FALLO, el instalador no registra ni arranca nada y termina con
+  código 1. Corrija y vuelva a ejecutarlo.
+
+TARJETA DE REFERENCIA
+  Instalar o reparar         .\Instalar.ps1 -Token "..." [-Impresora "..."]
+  Instalar con token nuevo   .\Instalar.ps1 -TokenAuto
+  Comprobar sin arrancar     .\Instalar.ps1 -SinArrancar
+  Detener y desinstalar      .\Instalar.ps1 -Quitar
+  Arrancar viendo la consola .\IniciarPerifericos.cmd
+  Estado del arranque        Get-ScheduledTaskInfo -TaskName 'SmartOne.Perifericos.Host'
+  Armar el paquete           .\CrearPaquete.ps1 -DetenerServicio
+
+  LastTaskResult 267009 (0x41301) significa "en ejecución". El valor
+  2147946720 (0x800710E0) que aparece cuando el host ya está corriendo es la
+  negativa normal del reintento de cada minuto, no un error.
+
+VERIFICACIÓN
+  Con el servicio levantado, en esta misma carpeta:
+
+    $t = (Get-Content .\token.txt -Raw).Trim()
+    $h = @{ 'X-Peripheral-Token' = $t }
+    Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5005/api/v1/impresion/estado -Headers $h -Body '{}' -ContentType 'application/json'
+    Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5005/api/v1/pinpad/probar      -Headers $h -Body '{}' -ContentType 'application/json'
+
+  Le tiene que responder HTTP 200. Un 401 significa que el token no coincide
+  con PERIFERICOS_TOKEN de la API.
+
+BITÁCORAS
+  host.log    Arranques, salidas y errores del host.
+  pinpad.log  Apertura de PCL, trama enviada y trama recibida de cada cobro.
+              Es la fuente principal cuando un cobro falla.
+
+  Ambas se escriben en esta carpeta. Cuando pida soporte, mande las dos.
+
+SI ALGO FALLA
+  El instalador no arranca, no pasa nada
+    Ábralo desde una consola de PowerShell en vez de doble clic, así ve el
+    mensaje de error. Verifique la política de ejecución con
+    Get-ExecutionPolicy.
+
+    Si el ZIP vino de internet: Get-ChildItem | Unblock-File
+
+  "Configure PERIFERICOS_TOKEN con al menos 32 caracteres antes de iniciar."
+    El host no arranca sin token. Ejecute .\Instalar.ps1 -Token "..." o escriba
+    token.txt (una sola línea, 32 caracteres o más).
+
+  HTTP 401 en las pruebas
+    token.txt no coincide con PERIFERICOS_TOKEN de FastAPI. Corrija uno de los
+    dos y vuelva a ejecutar el instalador.
+
+  La impresora no está disponible
+    El módulo NUNCA usa la impresora predeterminada de Windows. O el nombre de
+    la cola coincide con TM-T, TM-U, EPSON TM, RECEIPT, TICKET, THERMAL o POS-,
+    o hay que fijarla: .\Instalar.ps1 -Impresora "nombre exacto de la cola".
+
+  El pinpad no responde
+    Revise que esté encendido y con su USB. Si el 401 no es el problema,
+    pinpad.log dice en qué paso se quedó (apertura de PCL o espera del canal).
+
+  El servicio no vuelve después de caerse
+    El reintento automático es de un minuto y exige que la sesión del usuario
+    esté abierta: la tarea arranca "At log on" de esa cuenta. Si la caja queda
+    en la pantalla de inicio de sesión, el host no corre. Para que la caja
+    arranque sola hasta el escritorio, configure el inicio de sesión automático
+    de Windows. Alternativa equivalente: crear la tarea como "Al iniciar el
+    sistema" con el usuario SYSTEM, o registrar el .cmd como servicio.
+
+ARCHIVOS DEL PAQUETE
+  SmartOne.Perifericos.Host.exe        El servicio (x64, .NET Framework 4.8)
+  SmartOne.Perifericos.dll             El módulo de periféricos
+  SmartOne.Perifericos.Host.exe.config Configuración: impresora_ticket
+  PCLService.dll                       PCL de Ingenico (nativa x64)
+  PCL_Bridge.dll                       Puente PCL (nativa x64)
+  PclUtilities.dll                     Utilidades PCL (nativa x64)
+  dllsign.dll                          Firma de la PCL (nativa x64)
+  msvcp110.dll / msvcr110.dll          Runtime VC++ 2012 que exige la PCL
+  IniciarPerifericos.cmd               Arranque a mano, con consola visible
+  RegistrarArranqueAutomatico.ps1      Registra la tarea de arranque automático
+  Instalar.ps1                         Instalador y verificador de esta caja
+  LEEME.txt                            Este archivo
+  version.txt                          Commit y fecha con que se armó el paquete
+
+  CrearPaquete.ps1 no viene en el paquete: se ejecuta en la máquina de
+  desarrollo para volver a armarlo.
+
+  Las versiones de las DLL nativas son fijas: son las que entrega Ingenico y no
+  se reemplazan por otras.
+================================================================================

@@ -104,8 +104,14 @@ Host\bin\Release\
   token.txt                       token del servicio, una línea, 32 caracteres o más
   IniciarPerifericos.cmd          arranca el host
   RegistrarArranqueAutomatico.ps1 registra el arranque con la sesión
+  Instalar.ps1                    instala, fija la impresora y verifica la caja
+  LEEME.txt                       la guía que viaja con el paquete
   SmartOne.Perifericos.Host.exe   + la DLL del módulo, las DLL nativas y el .exe.config
 ```
+
+Para instalar una caja nueva no hace falta copiar archivo por archivo: el
+paquete de `dist\` ya trae todo y `Instalar.ps1` lo verifica. Ver
+[Carpeta de despliegue para otra caja](#carpeta-de-despliegue-para-otra-caja).
 
 El valor de `token.txt` debe ser el mismo que `PERIFERICOS_TOKEN` en FastAPI. Si
 el archivo no está, el `.cmd` usa `PERIFERICOS_TOKEN` del entorno; si tampoco
@@ -325,3 +331,58 @@ cola térmica reconocible. No se usa la impresora predeterminada.
   consumidor (no en el directorio de trabajo). Trae el arranque del servicio
   PCL y la trama de cada operación; es lo primero que se mira cuando el pinpad
   no responde.
+
+### Carpeta de despliegue para otra caja
+
+`CrearPaquete.ps1` (en `Host\Despliegue`, se queda en el repo y **no** viaja en
+el paquete) compila en Release y arma `dist\SmartOne.Perifericos.Host\` con los
+14 archivos que necesita una caja, más un ZIP hermano para copiar por red o
+llevar en un pendrive.
+
+```powershell
+.\CrearPaquete.ps1                       # compila y empaqueta en dist\
+.\CrearPaquete.ps1 -SinCompilar          # reusa lo último compilado
+.\CrearPaquete.ps1 -DetenerServicio      # si el host corre en esta máquina (lo vuelve a levantar)
+```
+
+El `.exe.config` del paquete se **regenera desde `Host\App.config`**, no se copia
+de `bin\Release`: así `impresora_ticket` sale vacío y el paquete no arrastra el
+nombre de la impresora de la máquina donde se compiló. Tampoco lleva
+`token.txt`, `*.log` ni `*.pdb`, y `version.txt` deja constancia del commit, la
+rama y la fecha de armado.
+
+En la caja, el paquete se instala y se verifica con `Instalar.ps1`, que es
+idempotente y no necesita consola elevada:
+
+```powershell
+Get-ChildItem | Unblock-File                                       # sólo si el ZIP vino de otra máquina o de internet
+.\Instalar.ps1 -Token 'p0s_Caja3_2026_ClaveServicioLocal'          # el mismo PERIFERICOS_TOKEN de la API
+.\Instalar.ps1 -TokenAuto                                          # o deja que genere uno y lo imprime para pegarlo en la API
+.\Instalar.ps1 -Token 'p0s_...' -Impresora 'EPSON TM-T20II Receipt' # fijar la cola si no se autodetecta
+.\Instalar.ps1 -Token 'p0s_...' -SinArrancar                       # revisar sin levantar el host
+.\Instalar.ps1 -Quitar                                             # detener y desinstalar de esta caja
+```
+
+Hace cinco pasos y termina con un informe; devuelve `exit 1` si algo quedó en
+`FALLO`, no si quedó en `AVISO`:
+
+1. Requisitos: Windows x64, .NET Framework 4.8 (`Release` 528040 o más) y los
+   10 archivos obligatorios del paquete. El `.exe.config` es un `AVISO` aparte:
+   sin él no se puede fijar la impresora con `-Impresora`.
+2. Periféricos: busca la cola térmica entre las instaladas con el mismo patrón
+   de nombres que usa el módulo, y el pinpad por PnP (`VID_0B00`, Ingenico) o
+   por la existencia de algún puerto serie. Aquí sólo avisa: si falta el
+   periférico, se instala después y no hay que repetir el paso.
+3. Impresora fijada con `-Impresora`: si el nombre no existe en esa máquina es
+   `FALLO` y no se registra ni se arranca nada. Un nombre elegido a mano se
+   toma como decisión deliberada, no como algo a adivinar.
+4. Token y arranque: escribe `token.txt` (si no se pasa ninguno y ya existe,
+   lo reutiliza) y delega el registro de la tarea en
+   `RegistrarArranqueAutomatico.ps1`; no duplica esa lógica.
+5. Arranque y prueba de humo: espera a que el puerto escuche y consulta
+   `/api/v1/impresion/estado` y `/api/v1/pinpad/probar`. Un `401` se reporta
+   como que el token no coincide con `PERIFERICOS_TOKEN`.
+
+`-TokenAuto` genera 32 bytes al azar en base64url (43 caracteres, dentro del
+alfabeto que valida el registrador) y lo imprime para pegarlo en la API. La
+carpeta viaja **sin** `token.txt`: el token se decide en la caja.

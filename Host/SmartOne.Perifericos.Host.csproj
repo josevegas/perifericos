@@ -54,6 +54,14 @@
       <Link>RegistrarArranqueAutomatico.ps1</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="Despliegue\Instalar.ps1">
+      <Link>Instalar.ps1</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="Despliegue\LEEME.txt">
+      <Link>LEEME.txt</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <Content Include="..\nativas\PCLService.dll">
       <Link>PCLService.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

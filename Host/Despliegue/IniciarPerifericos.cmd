@@ -75,7 +75,8 @@ exit /b 0
 echo.
 echo  [ERROR] No se encuentra SmartOne.Perifericos.Host.exe en esta carpeta.
 echo          Copie la carpeta de despliegue completa: el .exe, la DLL del
-echo          modulo y las DLL nativas que van en nativas\.
+echo          modulo y las seis DLL nativas deben quedar JUNTAS, en la misma
+echo          carpeta, sin subcarpetas.
 echo.
 >>"%LOG%" echo [%DATE:~-10% %TIME%] ERROR no se encontro SmartOne.Perifericos.Host.exe
 if defined PAUSA pause
