@@ -19,10 +19,12 @@ namespace PuntoVenta.Perifericos.Host
 
             try
             {
-                // Deja el enlace del pinpad levantado —y lo parea si es una caja
-                // nueva— mientras se arranca el servicio HTTP. No bloquea: si no
-                // hay pinpad sólo queda anotado en pinpad.log.
-                PinpadService.AsegurarServicioEnSegundoPlano();
+                // Completa el arranque y pareo PCL antes de aceptar solicitudes,
+                // para que la primera prueba/cobro no compita con la inicialización.
+                bool pinpadListo = PinpadService.AsegurarServicioEnSegundoPlano()
+                    .GetAwaiter().GetResult();
+                if (!pinpadListo)
+                    Console.Error.WriteLine("El canal PCL no está listo; revise pinpad.log.");
 
                 var host = new PerifericosHttpHost(token);
                 Console.WriteLine("Servicio de periféricos escuchando en http://127.0.0.1:5005/");

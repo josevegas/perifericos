@@ -74,12 +74,18 @@ Compila `Host\SmartOne.Perifericos.Host.csproj` en Release x64 y ejecuta
 | Ruta                                | Para qué                          | `Idempotency-Key` |
 | ----------------------------------- | --------------------------------- | ----------------- |
 | `/api/v1/pinpad/cobrar`             | Cobrar en el pinpad               | Obligatorio       |
+| `/api/v1/pinpad/probar`             | Probar eco PCL sin cobrar         | No se usa         |
 | `/api/v1/impresion/comprobante`     | Imprimir el comprobante           | Obligatorio       |
 | `/api/v1/impresion/gaveta`          | Abrir la gaveta de dinero         | No se usa         |
 | `/api/v1/impresion/estado`          | Diagnóstico de la impresora       | No se usa         |
 
 Los POST sin cuerpo deben mandar `Content-Length: 0` (o un cuerpo `{}`);
 `HTTP.sys` responde `411` si no hay ni cuerpo ni longitud declarada.
+
+La prueba del pinpad usa `POST /api/v1/pinpad/probar` con el encabezado
+`X-Peripheral-Token` y cuerpo vacío. Ejecuta el eco PCL (operación 20), que no
+cobra ni requiere tarjeta. Devuelve `comunicacion_ok` y `respuesta_recibida`;
+si el equipo no responde, incluye `mensaje_error`.
 
 Las rutas inexistentes responden `404` y cualquier método distinto de `POST`
 responde `405`, en ese orden: primero se valida el origen local, después el
@@ -266,6 +272,9 @@ y el permiso `VEN.EDIT`; envía el mismo `Idempotency-Key` en la cabecera y
 consulta el pinpad y el voucher antes de reintentar. Las rutas de impresión se
 usan igual: `POST /api/v1/impresion/comprobante` con el comprobante completo y
 el mismo `Idempotency-Key` de la venta; repetirlo no saca un segundo papel.
+Para una prueba no monetaria, FastAPI expone `POST /api/v1/pinpad/probar`,
+protegido con autenticación y `VEN.VER`; `comunicacion_ok: true` confirma que el
+eco PCL recibió respuesta del equipo.
 
 Mantén las DLL nativas PCL junto al ejecutable. Si el proceso se reinicia,
 las claves de idempotencia en memoria se pierden; antes de repetir un cobro

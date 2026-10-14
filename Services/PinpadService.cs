@@ -80,9 +80,9 @@ namespace PuntoVenta.Services
         /// Idempotente y a prueba de equipo ausente: se llama al arrancar la
         /// aplicación para que el enlace ya esté vivo cuando el islero llegue a cobrar.
         /// </summary>
-        public static void AsegurarServicioEnSegundoPlano()
+        public static Task<bool> AsegurarServicioEnSegundoPlano()
         {
-            Task.Run(() =>
+            return Task.Run(() =>
             {
                 try
                 {
@@ -93,14 +93,20 @@ namespace PuntoVenta.Services
                     // sin volver a levantar la sesión, así que se reintenta.
                     if (servicio.AsegurarEquipoPareado() && !servicio.EstaConectado())
                         servicio.Conectar();
+
+                    bool conectado = servicio.EstaConectado();
+                    Log("canal PCL listo=" + conectado);
+                    return conectado;
                 }
                 catch (DllNotFoundException)
                 {
-                    // Caja sin pinpad: se cobra digitando el voucher a mano.
+                    Log("No se encontró PCLService.dll al iniciar el servicio.");
+                    return false;
                 }
                 catch (Exception ex)
                 {
                     Log("Arranque del servicio PCL falló: " + ex.Message);
+                    return false;
                 }
             });
         }
@@ -116,15 +122,12 @@ namespace PuntoVenta.Services
             bool ok = PCLdll.startPclService();
             Log("startPclService=" + ok);
 
-            // startPclService devuelve FALSE cuando el servicio YA estaba arriba, y
-            // en ese caso el canal está sano: comprobado sobre el equipo real, con
-            // un segundo startPclService la transacción de prueba sigue aprobando.
-            // Quedarse con ese FALSE abortaba el cobro con un "no se pudo conectar"
-            // falso, que es justo lo que pasaba en el primer cobro tras el arranque
-            // del host. El servicio tampoco reporta listo al instante, así que se
-            // le da un margen antes de darlo por caído.
-            if (!ok) ok = EsperarCanal(TimeSpan.FromSeconds(3));
-            return ok;
+            // PCL puede aceptar el arranque antes de publicar el canal. Verificar
+            // serverStatus también cuando startPclService devuelve true evita
+            // enviar la primera transacción durante esa ventana de inicialización.
+            bool conectado = EsperarCanal(TimeSpan.FromSeconds(5));
+            Log("canal PCL listo=" + conectado);
+            return conectado;
         }
 
         /// <summary>
@@ -358,8 +361,24 @@ namespace PuntoVenta.Services
         }
 
         /// <summary>Prueba de comunicación con la app de pago (no cobra nada).</summary>
-        public Task<CobroTarjetaResultado> ProbarEcoAsync() =>
-            ConEspera(OperacionEcoTest, null, null, EsperaDiagnostico);
+        public async Task<CobroTarjetaResultado> ProbarEcoAsync()
+        {
+            if (!EstaConectado() && !Conectar())
+            {
+                if (!AsegurarEquipoPareado() || !Conectar())
+                {
+                    return new CobroTarjetaResultado
+                    {
+                        MensajeError =
+                            "No se pudo establecer el canal PCL con el pinpad. " +
+                            "Verifique el USB, el pareo del equipo y el servicio PCL.",
+                    };
+                }
+            }
+
+            return await ConEspera(
+                OperacionEcoTest, null, null, EsperaDiagnostico).ConfigureAwait(false);
+        }
 
         /// <summary>Inicialización del terminal con el host de Niubiz (descarga de parámetros).</summary>
         public Task<CobroTarjetaResultado> InicializarAsync() =>

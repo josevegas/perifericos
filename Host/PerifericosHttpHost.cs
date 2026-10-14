@@ -27,6 +27,7 @@ namespace PuntoVenta.Perifericos.Host
 
         /// <summary>Rutas: pinpad y impresora. El método de todas es POST.</summary>
         private const string RutaCobro = "/api/v1/pinpad/cobrar";
+        private const string RutaPruebaPinpad = "/api/v1/pinpad/probar";
         private const string RutaComprobante = "/api/v1/impresion/comprobante";
         private const string RutaGaveta = "/api/v1/impresion/gaveta";
         private const string RutaEstado = "/api/v1/impresion/estado";
@@ -110,6 +111,9 @@ namespace PuntoVenta.Perifericos.Host
                     case RutaCobro:
                         await AtenderCobroAsync(contexto);
                         return;
+                    case RutaPruebaPinpad:
+                        await AtenderPruebaPinpadAsync(contexto);
+                        return;
                     case RutaComprobante:
                         await AtenderComprobanteAsync(contexto);
                         return;
@@ -160,6 +164,26 @@ namespace PuntoVenta.Perifericos.Host
         }
 
         // ---------------------------------------------------------------- cobro
+
+        private async Task AtenderPruebaPinpadAsync(HttpListenerContext contexto)
+        {
+            if (!CuerpoDentroDelLimite(contexto, MaximoCuerpoCortoBytes))
+            {
+                await ResponderAsync(
+                    contexto, 413, Error("El cuerpo de la solicitud excede el tamaño permitido."));
+                return;
+            }
+
+            CobroTarjetaResultado resultado = await _pinpad.ProbarEcoAsync().ConfigureAwait(false);
+            bool respuestaRecibida = !string.IsNullOrEmpty(resultado.RespuestaCruda);
+
+            await ResponderAsync(contexto, 200, new Dictionary<string, object>
+            {
+                { "comunicacion_ok", resultado.Aprobado && respuestaRecibida },
+                { "respuesta_recibida", respuestaRecibida },
+                { "mensaje_error", resultado.MensajeError },
+            });
+        }
 
         private async Task AtenderCobroAsync(HttpListenerContext contexto)
         {
