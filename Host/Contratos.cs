@@ -14,6 +14,20 @@ namespace PuntoVenta.Perifericos.Host
     }
 
     /// <summary>
+    /// Cuerpo de <c>POST /api/v1/pinpad/anular</c>.
+    /// </summary>
+    public sealed class AnulacionPinpadRequest
+    {
+        /// <summary>
+        /// La referencia del cobro que se deshace: es el «REF» que salió
+        /// impreso en el voucher, no el código de autorización. El equipo
+        /// identifica por referencia la operación que tiene que anular, así que
+        /// mandarle la autorización haría que no encuentre nada que anular.
+        /// </summary>
+        public string referencia { get; set; }
+    }
+
+    /// <summary>
     /// Cuerpo de <c>POST /api/v1/impresion/comprobante</c>.
     ///
     /// Es un reflejo del modelo de la librería y no el modelo mismo: el contrato

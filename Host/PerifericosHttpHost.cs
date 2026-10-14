@@ -27,6 +27,7 @@ namespace PuntoVenta.Perifericos.Host
 
         /// <summary>Rutas: pinpad y impresora. El método de todas es POST.</summary>
         private const string RutaCobro = "/api/v1/pinpad/cobrar";
+        private const string RutaAnulacion = "/api/v1/pinpad/anular";
         private const string RutaPruebaPinpad = "/api/v1/pinpad/probar";
         private const string RutaComprobante = "/api/v1/impresion/comprobante";
         private const string RutaGaveta = "/api/v1/impresion/gaveta";
@@ -51,6 +52,8 @@ namespace PuntoVenta.Perifericos.Host
         private readonly string _token;
         private readonly object _candado = new object();
         private readonly Dictionary<Guid, CobroEnCache> _cobros = new Dictionary<Guid, CobroEnCache>();
+        private readonly Dictionary<Guid, AnulacionEnCache> _anulaciones =
+            new Dictionary<Guid, AnulacionEnCache>();
         private readonly Dictionary<Guid, ImpresionEnCache> _impresiones =
             new Dictionary<Guid, ImpresionEnCache>();
 
@@ -111,6 +114,9 @@ namespace PuntoVenta.Perifericos.Host
                     case RutaCobro:
                         await AtenderCobroAsync(contexto);
                         return;
+                    case RutaAnulacion:
+                        await AtenderAnulacionAsync(contexto);
+                        return;
                     case RutaPruebaPinpad:
                         await AtenderPruebaPinpadAsync(contexto);
                         return;
@@ -158,6 +164,8 @@ namespace PuntoVenta.Perifericos.Host
                     return "No se pudo abrir la gaveta.";
                 case RutaEstado:
                     return "No se pudo consultar la impresora.";
+                case RutaAnulacion:
+                    return "Falló la anulación local del cobro en el pinpad.";
                 default:
                     return "Falló la operación local del pinpad.";
             }
@@ -251,6 +259,104 @@ namespace PuntoVenta.Perifericos.Host
         private async Task<CobroTarjetaResultado> EjecutarCobroAsync(decimal monto)
         {
             return await _pinpad.CobrarAsync(monto).ConfigureAwait(false);
+        }
+
+        private async Task<CobroTarjetaResultado> EjecutarAnulacionAsync(string referencia)
+        {
+            return await _pinpad.AnularAsync(referencia).ConfigureAwait(false);
+        }
+
+        // ----------------------------------------------------------- anulación
+
+        /// <summary>
+        /// Deshace en el equipo un cobro ya aprobado, citando la referencia de su
+        /// voucher.
+        ///
+        /// Existe porque un cobro en curso no se puede abortar: la llamada nativa
+        /// de PCL es bloqueante y la DLL no expone cancelación alguna (ver
+        /// <c>PinpadService.ConEspera</c>). Lo único que este servicio puede
+        /// deshacer es un cobro que YA se aprobó, y eso es exactamente esto:
+        /// manda al aparato una operación de anulación con la referencia del
+        /// voucher, y con eso el importe vuelve a la tarjeta del cliente.
+        ///
+        /// Se anula por <b>referencia</b> —el «REF» impreso en el papel— y no por
+        /// autorización: el equipo busca la operación por referencia, y con la
+        /// autorización no encontraría qué anular.
+        ///
+        /// La <c>Idempotency-Key</c> impide anular dos veces si la respuesta se
+        /// pierde y el backend reintenta, y una clave reutilizada con otra
+        /// referencia se rechaza con 409 en vez de anular la operación
+        /// equivocada. Es el mismo trato que el cobro, porque el error es igual
+        /// de caro: un doble cobro y una doble anulación son los dos formas de
+        /// dejar el arqueo mintiendo.
+        ///
+        /// Sólo procede dentro del lote abierto: después del cierre del día el
+        /// equipo la rechaza y la devolución se gestiona con el banco.
+        /// </summary>
+        private async Task AtenderAnulacionAsync(HttpListenerContext contexto)
+        {
+            Guid clave;
+            if (!ClaveIdempotencia(contexto, out clave))
+            {
+                await ResponderAsync(contexto, 400, Error("Se requiere un Idempotency-Key UUID válido."));
+                return;
+            }
+
+            if (!CuerpoDentroDelLimite(contexto, MaximoCuerpoCortoBytes))
+            {
+                await ResponderAsync(contexto, 413, Error("El cuerpo de la solicitud excede el tamaño permitido."));
+                return;
+            }
+
+            AnulacionPinpadRequest solicitud = await LeerCuerpoAsync<AnulacionPinpadRequest>(contexto)
+                .ConfigureAwait(false);
+
+            if (solicitud == null)
+            {
+                await ResponderAsync(contexto, 400, Error("El cuerpo JSON no es válido."));
+                return;
+            }
+
+            string referencia = (solicitud.referencia ?? string.Empty).Trim();
+            if (referencia.Length == 0)
+            {
+                await ResponderAsync(
+                    contexto, 400, Error("La referencia del cobro a anular es obligatoria."));
+                return;
+            }
+
+            AnulacionEnCache anulacion = ObtenerOCrearAnulacion(clave, referencia);
+            if (!string.Equals(anulacion.Referencia, referencia, StringComparison.Ordinal))
+            {
+                await ResponderAsync(
+                    contexto, 409, Error("La clave de idempotencia ya se utilizó con otra referencia."));
+                return;
+            }
+
+            CobroTarjetaResultado resultado = await anulacion.Resultado.ConfigureAwait(false);
+            await ResponderAsync(contexto, 200, ConvertirResultado(resultado));
+        }
+
+        private AnulacionEnCache ObtenerOCrearAnulacion(Guid clave, string referencia)
+        {
+            lock (_candado)
+            {
+                DateTimeOffset ahora = DateTimeOffset.UtcNow;
+                PurgarVencidas(ahora);
+
+                AnulacionEnCache existente;
+                if (_anulaciones.TryGetValue(clave, out existente))
+                    return existente;
+
+                var creado = new AnulacionEnCache
+                {
+                    Referencia = referencia,
+                    CreadoUtc = ahora,
+                    Resultado = EjecutarAnulacionAsync(referencia),
+                };
+                _anulaciones.Add(clave, creado);
+                return creado;
+            }
         }
 
         // ----------------------------------------------------------- impresión
@@ -563,6 +669,16 @@ namespace PuntoVenta.Perifericos.Host
                 _cobros.Remove(vencida);
 
             vencidas.Clear();
+            foreach (KeyValuePair<Guid, AnulacionEnCache> par in _anulaciones)
+            {
+                if (par.Value.Resultado.IsCompleted &&
+                    ahora - par.Value.CreadoUtc >= VidaClaveIdempotencia)
+                    vencidas.Add(par.Key);
+            }
+            foreach (Guid vencida in vencidas)
+                _anulaciones.Remove(vencida);
+
+            vencidas.Clear();
             foreach (KeyValuePair<Guid, ImpresionEnCache> par in _impresiones)
             {
                 if (par.Value.Resultado.IsCompleted &&
@@ -646,6 +762,19 @@ namespace PuntoVenta.Perifericos.Host
         private sealed class CobroEnCache
         {
             public decimal Monto { get; set; }
+            public DateTimeOffset CreadoUtc { get; set; }
+            public Task<CobroTarjetaResultado> Resultado { get; set; }
+        }
+
+        /// <summary>
+        /// Una anulación ya pedida, guardada por su clave para poder responder lo
+        /// mismo si el backend reintenta. <see cref="Referencia"/> se escribe una
+        /// sola vez, antes de publicar el objeto en el diccionario, así que
+        /// leerlo desde fuera del candado es seguro.
+        /// </summary>
+        private sealed class AnulacionEnCache
+        {
+            public string Referencia { get; set; }
             public DateTimeOffset CreadoUtc { get; set; }
             public Task<CobroTarjetaResultado> Resultado { get; set; }
         }
