@@ -21,6 +21,10 @@
 # Bitácora del pinpad (la escribe PinpadService junto al ejecutable)
 pinpad.log
 
+# Token de servicio y salida del lanzador (los escribe IniciarPerifericos.cmd)
+token.txt
+host.log
+
 # Sistema operativo
 [Dd]esktop.ini
 Thumbs.db

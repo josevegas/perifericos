@@ -46,6 +46,14 @@
     <Compile Include="Program.cs" />
     <Compile Include="PerifericosHttpHost.cs" />
     <None Include="App.config" />
+    <None Include="Despliegue\IniciarPerifericos.cmd">
+      <Link>IniciarPerifericos.cmd</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="Despliegue\RegistrarArranqueAutomatico.ps1">
+      <Link>RegistrarArranqueAutomatico.ps1</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <Content Include="..\nativas\PCLService.dll">
       <Link>PCLService.dll</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

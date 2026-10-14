@@ -85,6 +85,51 @@ Las rutas inexistentes responden `404` y cualquier método distinto de `POST`
 responde `405`, en ese orden: primero se valida el origen local, después el
 token, después el método y por último la ruta.
 
+#### Arranque en la caja
+
+`IniciarPerifericos.cmd`, en la carpeta de despliegue, arranca el host con todo
+lo que necesita: se coloca en su propia carpeta —las DLL nativas de PCL viven
+ahí—, toma el token de `token.txt` y deja un rastro en `host.log`. Sin argumentos
+deja la ventana abierta al terminar para que se lea el error; con `sinpausa`
+—como lo invoca la tarea programada— sale sin esperar.
+
+```
+Host\bin\Release\
+  token.txt                       token del servicio, una línea, 32 caracteres o más
+  IniciarPerifericos.cmd          arranca el host
+  RegistrarArranqueAutomatico.ps1 registra el arranque con la sesión
+  SmartOne.Perifericos.Host.exe   + la DLL del módulo, las DLL nativas y el .exe.config
+```
+
+El valor de `token.txt` debe ser el mismo que `PERIFERICOS_TOKEN` en FastAPI. Si
+el archivo no está, el `.cmd` usa `PERIFERICOS_TOKEN` del entorno; si tampoco
+existe, avisa y sale con código 1.
+
+`RegistrarArranqueAutomatico.ps1` deja el host arrancando solo al iniciar sesión
+y lo reanuda en menos de un minuto si el proceso se cae o alguien cierra la
+ventana. No hace falta ejecutarlo elevado: el host escucha sólo en `127.0.0.1`,
+así que no necesita reserva de URL.
+
+```powershell
+.\RegistrarArranqueAutomatico.ps1 -Token 'p0s_Caja3_2026_ClaveServicioLocal'  # escribe token.txt y registra la tarea
+Start-ScheduledTask -TaskName 'SmartOne.Perifericos.Host'                     # arrancarlo ya, sin cerrar sesión
+Get-ScheduledTaskInfo -TaskName 'SmartOne.Perifericos.Host'                   # LastTaskResult 267009 = sigue corriendo
+.\RegistrarArranqueAutomatico.ps1 -Quitar                                     # deshacerlo
+```
+
+La tarea, `SmartOne.Perifericos.Host`, corre como el usuario que la registra y
+sin privilegios, y se detiene con la sesión. Mientras el host vive, los intentos
+del keep-alive no abren una segunda instancia (`MultipleInstances IgnoreNew`);
+si el operador cierra la ventana, el servicio vuelve solo en el siguiente minuto.
+
+Si `HttpListener` devolviera acceso denegado al arrancar en otra máquina —no es
+el caso de un prefijo de bucle local—, registra la reserva una vez desde una
+consola elevada para la cuenta que ejecutará el host:
+
+```powershell
+netsh http add urlacl url=http://127.0.0.1:5005/ user=DOMINIO\cuenta
+```
+
 #### Cobro con pinpad (HTTP)
 
 El JSON de solicitud es `{"monto": 25.50}` y requiere los encabezados
@@ -222,15 +267,7 @@ consulta el pinpad y el voucher antes de reintentar. Las rutas de impresión se
 usan igual: `POST /api/v1/impresion/comprobante` con el comprobante completo y
 el mismo `Idempotency-Key` de la venta; repetirlo no saca un segundo papel.
 
-`HttpListener` necesita que Windows autorice el prefijo. Registra la reserva
-una vez, desde una consola elevada, para la cuenta que ejecutará el host:
-
-```powershell
-netsh http add urlacl url=http://127.0.0.1:5005/ user=DOMINIO\cuenta
-```
-
-Inicia el host al arrancar Windows (por ejemplo, con el Programador de tareas)
-y mantén las DLL nativas PCL junto al ejecutable. Si el proceso se reinicia,
+Mantén las DLL nativas PCL junto al ejecutable. Si el proceso se reinicia,
 las claves de idempotencia en memoria se pierden; antes de repetir un cobro
 iniciado antes del reinicio hay que conciliarlo en el terminal.
 
