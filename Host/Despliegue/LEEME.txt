@@ -15,7 +15,9 @@ REQUISITOS DE LA CAJA
     Si falta: https://dotnet.microsoft.com/download/dotnet-framework/net48
   - Pinpad Ingenico/Niubiz conectado por USB y encendido.
   - Impresora térmica ESC/POS instalada en Windows.
-  - El token del servicio: el mismo valor que PERIFERICOS_TOKEN en FastAPI.
+  - El token del servicio, que es un secreto compartido con la API de FastAPI.
+    No hace falta conseguirlo a mano: el instalador lo toma del .env de la API
+    si la API vive en esta misma PC (ver "EL TOKEN DEL SERVICIO").
 
 INSTALACIÓN EN 3 PASOS
   1. Copie ESTA CARPETA COMPLETA a la PC de la caja, por ejemplo a
@@ -28,13 +30,22 @@ INSTALACIÓN EN 3 PASOS
 
         Get-ChildItem | Unblock-File
 
-  3. Ejecute el instalador con el token de la caja:
+  3. Ejecute el instalador:
 
-        powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -Token "EL_TOKEN_DE_LA_CAJA"
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1
+
+     Si la API de FastAPI vive en esta misma PC, el instalador encuentra su
+     .env, adopta su PERIFERICOS_TOKEN y deja los dos lados iguales. Si la API
+     todavía no tiene token, genera uno y lo escribe en los dos archivos; lo
+     único que queda por hacer a mano es reiniciar la API.
 
      Puede fijar la impresora a mano, si hay más de una:
 
-        powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -Token "EL_TOKEN_DE_LA_CAJA" -Impresora "EPSON TM-T20II Receipt"
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -Impresora "EPSON TM-T20II Receipt"
+
+     Sólo si la API está en OTRA máquina hay que llevar el token a mano:
+
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -SinTocarApi
 
   El instalador comprueba la máquina, escribe token.txt, registra el arranque
   automático, levanta el servicio y hace la prueba de humo. Al final imprime un
@@ -46,7 +57,8 @@ QUÉ HACE EL INSTALADOR
   2. Comprueba que estén los 10 archivos del paquete.               (bloqueante)
   3. Revisa la impresora térmica y el pinpad.                     (sólo aviso)
   4. Si pasa -Impresora, la fija en impresora_ticket del .exe.config.
-  5. Escribe token.txt y registra la tarea programada de arranque automático.
+  5. Resuelve el token con la API (ver "EL TOKEN DEL SERVICIO"), escribe
+     token.txt y registra la tarea programada de arranque automático.
   6. Levanta el host y consulta /api/v1/impresion/estado y
      /api/v1/pinpad/probar.
 
@@ -60,9 +72,40 @@ QUÉ HACE EL INSTALADOR
   Si algo sale FALLO, el instalador no registra ni arranca nada y termina con
   código 1. Corrija y vuelva a ejecutarlo.
 
+EL TOKEN DEL SERVICIO
+  El token es un secreto compartido: la API lo manda en el encabezado
+  X-Peripheral-Token y el host lo exige en cada petición. Los dos valores tienen
+  que ser iguales, y el host no arranca con uno de menos de 32 caracteres.
+
+  Como la API de FastAPI corre en esta misma PC, el instalador evita copiarlo a
+  mano. En este orden, toma el token:
+
+    1. De -Token, si se lo pasó.
+    2. De -TokenAuto, que genera uno nuevo y rota con él el de la API.
+    3. Del .env de la API, si declara PERIFERICOS_TOKEN con valor.
+    4. Del token.txt que ya exista en esta carpeta.
+    5. Y si no, genera uno y lo escribe en los dos lados.
+
+  Antes de tocar el .env guarda un respaldo: el anterior queda como .env.bak en
+  la carpeta de la API.
+
+  El .env se busca solo entre las carpetas vecinas a ésta. Si la API está en
+  otro sitio:
+
+        .\Instalar.ps1 -EnvApi "C:\ruta\al\.env"
+
+  Si la API vive en OTRA máquina su .env no se alcanza desde aquí:
+
+        .\Instalar.ps1 -SinTocarApi
+
+  En ese caso el instalador genera el token, lo imprime en pantalla y deja
+  token.txt con él; hay que copiarlo a PERIFERICOS_TOKEN en la API y reiniciarla.
+
 TARJETA DE REFERENCIA
-  Instalar o reparar         .\Instalar.ps1 -Token "..." [-Impresora "..."]
+  Instalar o reparar         .\Instalar.ps1 [-Impresora "..."]
   Instalar con token nuevo   .\Instalar.ps1 -TokenAuto
+  API en otra ruta           .\Instalar.ps1 -EnvApi "C:\ruta\al\.env"
+  API en otra máquina        .\Instalar.ps1 -SinTocarApi
   Comprobar sin arrancar     .\Instalar.ps1 -SinArrancar
   Detener y desinstalar      .\Instalar.ps1 -Quitar
   Arrancar viendo la consola .\IniciarPerifericos.cmd
@@ -100,12 +143,15 @@ SI ALGO FALLA
     Si el ZIP vino de internet: Get-ChildItem | Unblock-File
 
   "Configure PERIFERICOS_TOKEN con al menos 32 caracteres antes de iniciar."
-    El host no arranca sin token. Ejecute .\Instalar.ps1 -Token "..." o escriba
-    token.txt (una sola línea, 32 caracteres o más).
+    El host no arranca sin token. Ejecute .\Instalar.ps1 —toma el de la API o
+    genera uno y lo deja en los dos lados— o escriba token.txt a mano (una sola
+    línea, 32 caracteres o más).
 
   HTTP 401 en las pruebas
-    token.txt no coincide con PERIFERICOS_TOKEN de FastAPI. Corrija uno de los
-    dos y vuelva a ejecutar el instalador.
+    token.txt no coincide con PERIFERICOS_TOKEN de FastAPI. Vuelva a ejecutar
+    el instalador: adopta el de la API y sincroniza los dos lados. Recuerde que
+    la API lee su .env sólo al arrancar, así que después de un cambio de token
+    hay que reiniciarla.
 
   La impresora no está disponible
     El módulo NUNCA usa la impresora predeterminada de Windows. O el nombre de

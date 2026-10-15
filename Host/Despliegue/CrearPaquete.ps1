@@ -218,5 +218,6 @@ Write-Host ''
 Write-Host '  Para instalar en la caja:' -ForegroundColor Cyan
 Write-Host '   1. Copie la carpeta completa (o descomprima el ZIP) en la PC de la caja.'
 Write-Host '   2. Si bajó el ZIP de otra máquina o de internet:  Get-ChildItem | Unblock-File'
-Write-Host '   3. powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -Token "<token de la caja>"'
+Write-Host '   3. powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1'
+Write-Host '      (toma el PERIFERICOS_TOKEN del .env de la API; -Token lo fuerza)'
 Write-Host ''

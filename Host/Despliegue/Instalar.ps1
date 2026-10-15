@@ -10,6 +10,12 @@
     arranque automático, levanta el host y hace la prueba de humo contra el
     puerto 5005.
 
+    El token es un secreto compartido entre la API de FastAPI y el host, y en la
+    caja los dos viven en la misma máquina. En vez de copiarlo a mano de un lado
+    al otro, el instalador busca el .env de la API, adopta su PERIFERICOS_TOKEN y
+    lo deja en token.txt; si la clave está vacía, genera uno y lo escribe en los
+    dos lados. Con -SinTocarApi el .env no se lee ni se escribe.
+
     El informe usa tres niveles:
 
       OK     el requisito se cumple.
@@ -20,13 +26,23 @@
 
 .PARAMETER Token
     Token del servicio. Debe ser el mismo valor que PERIFERICOS_TOKEN en la API
-    de FastAPI. Si se omite y ya existe token.txt, se reutiliza.
+    de FastAPI. Si se omite, se adopta el de la API; y si tampoco hay, si ya
+    existe token.txt se reutiliza.
 
 .PARAMETER TokenAuto
-    Genera un token nuevo con el generador criptográfico de Windows y lo usa.
-    Sirve para una caja que se integra por primera vez: el token que imprime
-    hay que copiarlo tal cual en PERIFERICOS_TOKEN de FastAPI. No se puede usar
-    junto con -Token.
+    Genera un token nuevo con el generador criptográfico de Windows y rota con
+    él el PERIFERICOS_TOKEN de la API. Sirve para una caja que se integra por
+    primera vez o cuando hay que cambiar el secreto. No se puede usar junto con
+    -Token.
+
+.PARAMETER EnvApi
+    Ruta del .env de la API de FastAPI. Por defecto se busca solo, entre las
+    carpetas vecinas a esta. Si el archivo no existe, es un fallo.
+
+.PARAMETER SinTocarApi
+    No lee ni escribe el .env de la API: el token sale sólo de -Token, -TokenAuto
+    o token.txt. Para cuando la API vive en otra máquina y su .env se alinea a
+    mano.
 
 .PARAMETER Impresora
     Nombre exacto de la cola de la impresora térmica, tal como aparece en
@@ -47,10 +63,17 @@
     token.txt: para reinstalar basta con volver a ejecutar el instalador.
 
 .EXAMPLE
+    .\Instalar.ps1
+    Toma el token del .env de la API y deja la caja operando.
+
+.EXAMPLE
     .\Instalar.ps1 -Token 'p0s_Caja3_2026_ClaveServicioLocal'
 
 .EXAMPLE
-    .\Instalar.ps1 -Token 'p0s_Caja3_2026_ClaveServicioLocal' -Impresora 'EPSON TM-T20II Receipt'
+    .\Instalar.ps1 -TokenAuto -Impresora 'EPSON TM-T20II Receipt'
+
+.EXAMPLE
+    .\Instalar.ps1 -EnvApi 'D:\api\.env' -SinArrancar
 
 .EXAMPLE
     .\Instalar.ps1 -Quitar
@@ -59,6 +82,8 @@
 param(
     [string] $Token,
     [switch] $TokenAuto,
+    [string] $EnvApi,
+    [switch] $SinTocarApi,
     [string] $Impresora,
     [string] $Usuario,
     [string] $NombreTarea = 'SmartOne.Perifericos.Host',
@@ -70,6 +95,10 @@ $ErrorActionPreference = 'Stop'
 
 if ($Token -and $TokenAuto) {
     throw 'Use -Token o -TokenAuto, no los dos.'
+}
+
+if ($EnvApi -and $SinTocarApi) {
+    throw 'Use -EnvApi o -SinTocarApi, no los dos: el primero indica qué .env tocar y el segundo pide no tocarlo.'
 }
 
 $raiz        = $PSScriptRoot
@@ -84,6 +113,7 @@ $guion  = New-Object System.Collections.ArrayList
 $fallos = 0
 $avisos = 0
 $paso   = 0
+$hostIniciadoAqui = $false
 
 function Anota {
     param(
@@ -141,11 +171,109 @@ function MotivoDeFallo {
     if ($respuesta) {
         $codigo = [int] $respuesta.StatusCode
         if ($codigo -eq 401) {
-            return 'HTTP 401: el token no coincide con PERIFERICOS_TOKEN de la API.'
+            $texto = 'HTTP 401: el token no coincide con el que tiene el host en marcha.'
+            if (-not $script:hostIniciadoAqui) {
+                $texto += ' El host ya estaba corriendo: reinícielo para que lea el token.txt nuevo.'
+            }
+            return $texto
         }
         return 'HTTP ' + $codigo
     }
     return $Error.Exception.Message
+}
+
+function NuevoToken {
+    # 32 bytes al azar en base64url: entra en el alfabeto que valida el
+    # registrador y viaja sin escapes en un encabezado HTTP.
+    $bytes = New-Object byte[] 32
+    $azar = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $azar.GetBytes($bytes) } finally { $azar.Dispose() }
+    return [Convert]::ToBase64String($bytes).Replace('+', '-').Replace('/', '_').TrimEnd([char] '=')
+}
+
+function BuscarEnvApi {
+    # El .env de la API se reconoce porque declara PERIFERICOS_TOKEN. Se busca en
+    # el árbol cercano —cada carpeta padre y sus hermanas, hasta tres niveles—
+    # porque en la caja la API y el host comparten equipo y suelen quedar vecinos.
+    param([string] $Desde = $raiz)
+
+    if (-not $Desde) { $Desde = (Get-Location).Path }
+
+    $candidatas = New-Object System.Collections.ArrayList
+    $nivel = $Desde
+    for ($i = 0; $i -lt 3; $i++) {
+        $padre = Split-Path -Parent $nivel
+        if (-not $padre) { break }
+        [void] $candidatas.Add((Join-Path $padre '.env'))
+        foreach ($vecina in @(Get-ChildItem -LiteralPath $padre -Directory -Force -ErrorAction SilentlyContinue)) {
+            [void] $candidatas.Add((Join-Path $vecina.FullName '.env'))
+        }
+        $nivel = $padre
+    }
+
+    foreach ($candidata in $candidatas) {
+        if (-not (Test-Path -LiteralPath $candidata -PathType Leaf)) { continue }
+        $texto = Get-Content -LiteralPath $candidata -Raw -ErrorAction SilentlyContinue
+        if ($texto -match '(?m)^[ \t]*PERIFERICOS_TOKEN[ \t]*=') {
+            return (Resolve-Path -LiteralPath $candidata).Path
+        }
+    }
+    return $null
+}
+
+function LeerTokenDeEnv {
+    param([string] $Ruta)
+    # $null si la clave no está declarada y '' si está vacía: son casos distintos
+    # —a la primera hay que agregarla al final, a la segunda rellenarla—.
+    $linea = $null
+    foreach ($actual in @(Get-Content -LiteralPath $Ruta -ErrorAction Stop)) {
+        if ($actual -match '^[ \t]*PERIFERICOS_TOKEN[ \t]*=') { $linea = $actual; break }
+    }
+    if ($null -eq $linea) { return $null }
+
+    $valor = $linea.Substring($linea.IndexOf('=') + 1).Trim()
+
+    if ($valor.StartsWith('"') -or $valor.StartsWith("'")) {
+        $fin = $valor.IndexOf($valor[0], 1)
+        if ($fin -gt 0) { return $valor.Substring(1, $fin - 1) }
+    }
+
+    # Un comentario al final de la línea no forma parte del valor; ningún token
+    # válido lleva '#' porque el alfabeto es A-Z a-z 0-9 . _ -
+    $corte = $valor.IndexOf('#')
+    if ($corte -ge 0) { $valor = $valor.Substring(0, $corte) }
+    return $valor.Trim()
+}
+
+function EscribirTokenEnEnv {
+    param([string] $Ruta, [string] $Valor)
+
+    $original = [System.IO.File]::ReadAllText($Ruta, [System.Text.Encoding]::UTF8)
+
+    # Se reemplaza sólo el valor: los comentarios, los finales de línea y el
+    # resto de las claves quedan tal como estaban.
+    $m = [regex]::Match($original, '(?m)^([ \t]*PERIFERICOS_TOKEN[ \t]*=)[^\r\n]*')
+    if ($m.Success) {
+        $clave = $m.Groups[1]
+        $inicioValor = $clave.Index + $clave.Length
+        $comentario = ''
+        $almohadilla = $m.Value.Substring($clave.Length).IndexOf('#')
+        if ($almohadilla -ge 0) {
+            $comentario = ' ' + $m.Value.Substring($clave.Length).Substring($almohadilla).TrimEnd()
+        }
+        $nuevo = $original.Substring(0, $inicioValor) + $Valor + $comentario +
+            $original.Substring($m.Index + $m.Length)
+    }
+    else {
+        $salto = "`n"
+        if ($original -match "`r`n") { $salto = "`r`n" }
+        if ($original.Length -gt 0 -and -not $original.EndsWith($salto)) { $original += $salto }
+        $nuevo = $original + 'PERIFERICOS_TOKEN=' + $Valor + $salto
+    }
+
+    # El respaldo queda ignorado por git en el repo de la API (regla .env.*).
+    Copy-Item -LiteralPath $Ruta -Destination ($Ruta + '.bak') -Force
+    [System.IO.File]::WriteAllText($Ruta, $nuevo, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 Write-Host ''
@@ -334,43 +462,124 @@ if ($fallos -gt 0) {
 # ------------------------------------------------------- token y arranque ----
 Titulo 'Token del servicio y arranque automático'
 
-$generado = $false
+# El token es compartido: la API lo manda en X-Peripheral-Token y el host lo
+# exige. Antes de registrar la tarea hay que saber cuál es el bueno.
+$rutaEnv  = $null
+$tokenEnv = $null
 
-if ($TokenAuto) {
-    $bytes = New-Object byte[] 32
-    $azar = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    try { $azar.GetBytes($bytes) } finally { $azar.Dispose() }
+if (-not $SinTocarApi) {
+    if ($EnvApi) {
+        if (Test-Path -LiteralPath $EnvApi -PathType Leaf) { $rutaEnv = (Resolve-Path -LiteralPath $EnvApi).Path }
+    }
+    else {
+        $rutaEnv = BuscarEnvApi
+    }
 
-    # base64url: entra en el alfabeto que valida el registrador y viaja sin
-    # escapes en un encabezado HTTP.
-    $Token = [Convert]::ToBase64String($bytes).Replace('+', '-').Replace('/', '_').TrimEnd([char] '=')
+    if ($rutaEnv) {
+        $tokenEnv = LeerTokenDeEnv -Ruta $rutaEnv
+        Anota 'OK' ('API: ' + $rutaEnv)
+        if (-not $tokenEnv) { Anota 'AVISO' 'La API todavía no tiene PERIFERICOS_TOKEN; se creará al final.' }
+    }
+    elseif (-not $Token -and -not $TokenAuto) {
+        Anota 'AVISO' 'No se encontró el .env de la API. Indique -EnvApi <ruta>, o use -Token / -TokenAuto.'
+    }
+}
+
+$generado      = $false
+$adoptado      = $false
+$tokenEfectivo = $null
+$tokenTxtActual = $null
+if (Test-Path -LiteralPath $tokenTxt -PathType Leaf) { $tokenTxtActual = (Get-Content -LiteralPath $tokenTxt -Raw).Trim() }
+
+if ($Token) {
+    $tokenEfectivo = $Token
+    Anota 'OK' 'Token tomado del parámetro -Token.'
+}
+elseif ($TokenAuto) {
+    $tokenEfectivo = NuevoToken
     $generado = $true
+    Anota 'OK' 'Token generado (aleatorio de 256 bits).'
+}
+elseif (-not $SinTocarApi -and $tokenEnv) {
+    $tokenEfectivo = $tokenEnv
+    $adoptado = $true
+    Anota 'OK' 'Token adoptado del .env de la API: los dos lados quedan iguales.'
+}
+elseif ($tokenTxtActual) {
+    $tokenEfectivo = $tokenTxtActual
+    Anota 'OK' 'Token reutilizado del token.txt de esta caja.'
+}
+elseif (-not $SinTocarApi -and $rutaEnv) {
+    # La API está en esta máquina pero aún sin token: se genera uno y se
+    # escribe en los dos lados para que nadie lo copie a mano.
+    $tokenEfectivo = NuevoToken
+    $generado = $true
+    Anota 'OK' 'La API no tiene token: se genera uno y se escribe en los dos lados.'
+}
+else {
+    $tokenEfectivo = NuevoToken
+    $generado = $true
+    Anota 'OK' 'Token generado (aleatorio de 256 bits).'
 }
 
-$splat = @{ NombreTarea = $NombreTarea }
-if ($Token) { $splat['Token'] = $Token }
-if ($Usuario) { $splat['Usuario'] = $Usuario }
-
-try {
-    & $registrador @splat
-    Anota 'OK' ("Arranque automático registrado como '" + $NombreTarea + "'.")
-}
-catch {
-    Anota 'FALLO' ('No se pudo registrar el arranque automático: ' + $_.Exception.Message)
+if ($tokenEfectivo.Length -lt 32 -or $tokenEfectivo -notmatch '^[A-Za-z0-9._-]+$') {
+    Anota 'FALLO' 'El token debe tener 32 caracteres o más, de A-Z a-z 0-9 . _ -'
 }
 
-$tokenEfectivo = $Token
-if (-not $tokenEfectivo -and (Test-Path -LiteralPath $tokenTxt)) {
-    $tokenEfectivo = (Get-Content -LiteralPath $tokenTxt -Raw).Trim()
-    Anota 'OK' 'Se reutilizó el token que ya estaba en token.txt.'
+# Sólo se registra el arranque con un token válido; si no, la tarea arrancaría
+# y moriría cada minuto mientras el registro de tareas va apuntando el fallo.
+if ($fallos -eq 0) {
+    $splat = @{ NombreTarea = $NombreTarea }
+    $splat['Token'] = $tokenEfectivo
+    if ($Usuario) { $splat['Usuario'] = $Usuario }
+
+    try {
+        & $registrador @splat
+        Anota 'OK' ("Arranque automático registrado como '" + $NombreTarea + "'.")
+    }
+    catch {
+        Anota 'FALLO' ('No se pudo registrar el arranque automático: ' + $_.Exception.Message)
+    }
 }
 
-if ($generado -and $fallos -eq 0) {
+if ($fallos -gt 0) {
     Write-Host ''
-    Write-Host '  Token generado para esta caja:' -ForegroundColor Yellow
-    Write-Host ('   ' + $Token) -ForegroundColor Yellow
-    Write-Host '  Cópielo tal cual en PERIFERICOS_TOKEN de la API de FastAPI.' -ForegroundColor Yellow
+    Write-Host '  El token quedó sin resolver: no se arranca el host.' -ForegroundColor Red
+    Write-Host '  Corríjalo y vuelva a ejecutar el instalador.' -ForegroundColor Red
+    exit 1
 }
+
+# Igualar la API. Va después de token.txt para que nunca quede una caja con el
+# host listo y la API apuntando a un token viejo.
+if (-not $SinTocarApi -and $rutaEnv) {
+    if ($tokenEnv -ne $tokenEfectivo) {
+        try {
+            EscribirTokenEnEnv -Ruta $rutaEnv -Valor $tokenEfectivo
+            Anota 'OK' 'PERIFERICOS_TOKEN escrito en el .env de la API (respaldo: .env.bak).'
+            Anota 'AVISO' 'Reinicie la API de FastAPI: pydantic lee PERIFERICOS_TOKEN sólo al arrancar.'
+        }
+        catch {
+            Anota 'FALLO' ('No se pudo escribir PERIFERICOS_TOKEN en el .env: ' + $_.Exception.Message)
+        }
+    }
+    else {
+        Anota 'OK' 'El PERIFERICOS_TOKEN del .env ya coincide con el del host.'
+    }
+}
+
+if ($generado) {
+    Write-Host ''
+    Write-Host '  Token de esta caja:' -ForegroundColor Yellow
+    Write-Host ('   ' + $tokenEfectivo) -ForegroundColor Yellow
+    if ($rutaEnv -and $tokenEnv -eq $tokenEfectivo) {
+        Write-Host '  Ya quedó escrito en el .env de la API.' -ForegroundColor Yellow
+    }
+    else {
+        Write-Host '  Cópielo tal cual en PERIFERICOS_TOKEN de la API de FastAPI.' -ForegroundColor Yellow
+    }
+}
+
+if ($adoptado) { Write-Host '  Token tomado de la API; no hay nada que copiar.' -ForegroundColor DarkGray }
 
 # ------------------------------------------------- arranque y prueba de humo --
 Titulo 'Arranque y prueba de humo'
@@ -386,6 +595,7 @@ else {
         Anota 'OK' ('El host ya estaba escuchando en el puerto ' + $puerto + '.')
     }
     else {
+        $hostIniciadoAqui = $true
         Start-ScheduledTask -TaskName $NombreTarea
         $limite = (Get-Date).AddSeconds(40)
         while (-not (PuertoAbierto $puerto) -and (Get-Date) -lt $limite) {
@@ -404,6 +614,11 @@ else {
         Anota 'AVISO' 'Sin token a mano: se omite la prueba de humo.'
     }
     elseif ($fallos -eq 0) {
+        # Un 401 aquí significa que el host vivo tiene otro token del que
+        # acabamos de dejar en token.txt. Si lo arrancamos nosotros, es un fallo
+        # real; si ya estaba corriendo, basta con reiniciarlo.
+        $aviso401 = $false
+
         try {
             $estado = Invocar-Perifericos '/api/v1/impresion/estado' $tokenEfectivo
             if ($estado.disponible) {
@@ -415,23 +630,32 @@ else {
             }
         }
         catch {
-            Anota 'FALLO' ('La ruta de estado falló: ' + (MotivoDeFallo $_))
-        }
-
-        try {
-            $prueba = Invocar-Perifericos '/api/v1/pinpad/probar' $tokenEfectivo
-            if ($prueba.comunicacion_ok) {
-                Anota 'OK' 'El pinpad respondió al eco PCL (no cobra nada).'
-            }
-            elseif ($prueba.respuesta_recibida) {
-                Anota 'AVISO' ('El pinpad respondió pero la operación no aprobó: ' + $prueba.mensaje_error)
+            if (-not $hostIniciadoAqui -and -not $aviso401 -and $_.Exception.Response -and
+                [int] $_.Exception.Response.StatusCode -eq 401) {
+                $aviso401 = $true
+                Anota 'AVISO' 'El host en marcha todavía usa el token anterior: reinícielo para probarlo con el nuevo.'
             }
             else {
-                Anota 'AVISO' ('El pinpad no respondió: ' + $prueba.mensaje_error)
+                Anota 'FALLO' ('La ruta de estado falló: ' + (MotivoDeFallo $_))
             }
         }
-        catch {
-            Anota 'FALLO' ('La prueba del pinpad falló: ' + (MotivoDeFallo $_))
+
+        if (-not $aviso401) {
+            try {
+                $prueba = Invocar-Perifericos '/api/v1/pinpad/probar' $tokenEfectivo
+                if ($prueba.comunicacion_ok) {
+                    Anota 'OK' 'El pinpad respondió al eco PCL (no cobra nada).'
+                }
+                elseif ($prueba.respuesta_recibida) {
+                    Anota 'AVISO' ('El pinpad respondió pero la operación no aprobó: ' + $prueba.mensaje_error)
+                }
+                else {
+                    Anota 'AVISO' ('El pinpad no respondió: ' + $prueba.mensaje_error)
+                }
+            }
+            catch {
+                Anota 'FALLO' ('La prueba del pinpad falló: ' + (MotivoDeFallo $_))
+            }
         }
     }
 }

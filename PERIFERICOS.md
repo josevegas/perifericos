@@ -115,7 +115,8 @@ paquete de `dist\` ya trae todo y `Instalar.ps1` lo verifica. Ver
 
 El valor de `token.txt` debe ser el mismo que `PERIFERICOS_TOKEN` en FastAPI. Si
 el archivo no está, el `.cmd` usa `PERIFERICOS_TOKEN` del entorno; si tampoco
-existe, avisa y sale con código 1.
+existe, avisa y sale con código 1. En la caja no hay que copiarlo a mano: ver
+[El token de la caja](#el-token-de-la-caja).
 
 `RegistrarArranqueAutomatico.ps1` deja el host arrancando solo al iniciar sesión
 y lo reanuda en menos de un minuto si el proceso se cae o alguien cierra la
@@ -141,6 +142,46 @@ consola elevada para la cuenta que ejecutará el host:
 ```powershell
 netsh http add urlacl url=http://127.0.0.1:5005/ user=DOMINIO\cuenta
 ```
+
+#### El token de la caja
+
+El token es un secreto simétrico: la API lo manda en `X-Peripheral-Token` y el
+host lo exige en cada `POST`. El host no arranca con uno de menos de 32
+caracteres (`A-Z a-z 0-9 . _ -`). Como la API de FastAPI corre en la misma PC
+que el host, `Instalar.ps1` lo resuelve leyendo su `.env`, en vez de obligar a
+copiar el mismo valor entre `token.txt` y `PERIFERICOS_TOKEN`. El orden es:
+
+| Prioridad | Origen                    | Cuándo                                    |
+| --------- | ------------------------- | ----------------------------------------- |
+| 1         | `-Token`                  | Se pasa a mano                            |
+| 2         | `-TokenAuto`              | Se quiere rotar el secreto                |
+| 3         | `.env` de la API          | Declara `PERIFERICOS_TOKEN` con valor     |
+| 4         | `token.txt` de la caja    | La caja ya tenía uno                      |
+| 5         | Generado                  | Ni el `.env` ni la caja tenían uno        |
+
+El valor se valida **antes** de registrar la tarea: con un token inválido el
+script hace `FALLO`, termina con código 1 y no escribe `token.txt` ni arranca
+nada, así que la tarea nunca queda reintentando contra un token que el host
+rechazaría.
+
+El `.env` se busca solo entre cada carpeta padre de la carpeta de despliegue y
+las hermanas de esos padres, hasta tres niveles, y se reconoce porque declara
+`PERIFERICOS_TOKEN`. Con `-EnvApi <ruta>` se fija la ruta exacta; con
+`-SinTocarApi` no se lee ni se escribe —es el caso de una API en otra máquina—.
+Antes de reescribirlo guarda el anterior como `.env.bak` al lado.
+
+La escritura es quirúrgica: se reemplaza sólo el valor de esa línea y se
+conservan el BOM si lo había, los finales de línea, un comentario al final de la
+misma línea y todo el resto del archivo. Si la clave no está declarada, se
+agrega al final con el salto de línea dominante del archivo.
+
+La API lee su `.env` una sola vez, al arrancar (`pydantic_settings`), así que
+después de un cambio de token hay que reiniciar la API; el instalador lo avisa.
+
+Un `HTTP 401` en la prueba de humo con el host **ya** en marcha es un desajuste
+entre el host y quien lo llama —el proceso vivo todavía tiene el `token.txt`
+anterior—, no un problema de la API: se reporta como `AVISO` y se saltea la
+prueba del pinpad. Basta reiniciar el host para que lea el token nuevo.
 
 #### Cobro con pinpad (HTTP)
 
@@ -355,12 +396,15 @@ En la caja, el paquete se instala y se verifica con `Instalar.ps1`, que es
 idempotente y no necesita consola elevada:
 
 ```powershell
-Get-ChildItem | Unblock-File                                       # sólo si el ZIP vino de otra máquina o de internet
-.\Instalar.ps1 -Token 'p0s_Caja3_2026_ClaveServicioLocal'          # el mismo PERIFERICOS_TOKEN de la API
-.\Instalar.ps1 -TokenAuto                                          # o deja que genere uno y lo imprime para pegarlo en la API
-.\Instalar.ps1 -Token 'p0s_...' -Impresora 'EPSON TM-T20II Receipt' # fijar la cola si no se autodetecta
-.\Instalar.ps1 -Token 'p0s_...' -SinArrancar                       # revisar sin levantar el host
-.\Instalar.ps1 -Quitar                                             # detener y desinstalar de esta caja
+Get-ChildItem | Unblock-File                  # sólo si el ZIP vino de otra máquina o de internet
+.\Instalar.ps1                                # toma el PERIFERICOS_TOKEN del .env y sincroniza los dos lados
+.\Instalar.ps1 -Token 'p0s_Caja3_2026_ClaveServicioLocal'   # forzar un valor concreto
+.\Instalar.ps1 -TokenAuto                     # rotar el secreto en los dos lados
+.\Instalar.ps1 -EnvApi 'D:\api\.env'          # si el .env no está entre las carpetas vecinas
+.\Instalar.ps1 -SinTocarApi                   # API en otra máquina: genera y muestra el token
+.\Instalar.ps1 -Impresora 'EPSON TM-T20II Receipt'   # fijar la cola si no se autodetecta
+.\Instalar.ps1 -SinArrancar                   # revisar sin levantar el host
+.\Instalar.ps1 -Quitar                        # detener y desinstalar de esta caja
 ```
 
 Hace cinco pasos y termina con un informe; devuelve `exit 1` si algo quedó en
@@ -376,13 +420,18 @@ Hace cinco pasos y termina con un informe; devuelve `exit 1` si algo quedó en
 3. Impresora fijada con `-Impresora`: si el nombre no existe en esa máquina es
    `FALLO` y no se registra ni se arranca nada. Un nombre elegido a mano se
    toma como decisión deliberada, no como algo a adivinar.
-4. Token y arranque: escribe `token.txt` (si no se pasa ninguno y ya existe,
-   lo reutiliza) y delega el registro de la tarea en
-   `RegistrarArranqueAutomatico.ps1`; no duplica esa lógica.
+4. Token y arranque: resuelve el token como se describe en
+   [El token de la caja](#el-token-de-la-caja) —sincronizando el `.env` de la
+   API si hace falta—, escribe `token.txt` y delega el registro de la tarea en
+   `RegistrarArranqueAutomatico.ps1`; no duplica esa lógica. Un token inválido
+   es `FALLO` y no se registra ni se arranca nada.
 5. Arranque y prueba de humo: espera a que el puerto escuche y consulta
-   `/api/v1/impresion/estado` y `/api/v1/pinpad/probar`. Un `401` se reporta
-   como que el token no coincide con `PERIFERICOS_TOKEN`.
+   `/api/v1/impresion/estado` y `/api/v1/pinpad/probar`. Un `401` con el host
+   ya en marcha es `AVISO` —el proceso vivo sigue con el token anterior y hay
+   que reiniciarlo— y además se saltea la prueba del pinpad.
 
 `-TokenAuto` genera 32 bytes al azar en base64url (43 caracteres, dentro del
-alfabeto que valida el registrador) y lo imprime para pegarlo en la API. La
-carpeta viaja **sin** `token.txt`: el token se decide en la caja.
+alfabeto que valida el registrador) y lo imprime. La carpeta viaja **sin**
+`token.txt`: el token se decide en la caja. En el caso normal —la API en la
+misma máquina— no hay nada que pegar: el instalador adopta el token del `.env`
+y, si la API todavía no tiene uno, lo escribe él mismo en los dos lados.
