@@ -3,16 +3,27 @@
     Arma la carpeta de despliegue para llevar los periféricos a otra caja.
 
 .DESCRIPTION
-    Compila la solución en Release y copia a una carpeta limpia --sin bitácoras,
-    sin token y sin símbolos-- todo lo que la caja destino necesita: el host, la
-    DLL del módulo, las seis DLL nativas de Ingenico y los scripts de
-    instalación. El .exe.config se regenera desde Host\App.config, de modo que
-    nunca arrastra la impresora de la máquina donde se compila.
+    Compila la solución en Release y copia a una carpeta limpia --sin bitácoras
+    ni símbolos-- todo lo que la caja destino necesita: el host, la DLL del
+    módulo, las seis DLL nativas de Ingenico, los scripts de instalación y un
+    token.txt pregrabado, para que la caja arranque sin copiar secretos a mano.
+    El .exe.config se regenera desde Host\App.config, de modo que nunca arrastra
+    la impresora de la máquina donde se compila.
 
     Al terminar deja también un .zip listo para copiar en una memoria USB.
 
 .PARAMETER Destino
     Carpeta donde se arma el paquete. Por defecto, dist\ en la raíz del repo.
+
+.PARAMETER Token
+    Token que viaja en token.txt. Por defecto se genera uno nuevo por paquete
+    --32 bytes al azar en base64url--, de modo que dos cajas no comparten
+    secreto. Con esto se fija un valor concreto. No se puede usar junto con
+    -SinToken.
+
+.PARAMETER SinToken
+    No incluye token.txt en el paquete: la caja lo resuelve al instalar, con el
+    token del .env de la API o generando uno.
 
 .PARAMETER SinCompilar
     Reutiliza lo ya compilado en Host\bin\Release en vez de compilar.
@@ -27,16 +38,25 @@
 
 .EXAMPLE
     .\CrearPaquete.ps1 -DetenerServicio
+
+.EXAMPLE
+    .\CrearPaquete.ps1 -Token 'p0s_Caja3_2026_ClaveServicioLocal'
 #>
 [CmdletBinding()]
 param(
     [string] $Destino,
+    [string] $Token,
+    [switch] $SinToken,
     [switch] $SinCompilar,
     [switch] $SinZip,
     [switch] $DetenerServicio
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($Token -and $SinToken) {
+    throw 'Use -Token o -SinToken, no los dos: el primero fija el token del paquete y el segundo pide no incluirlo.'
+}
 
 $despliegue   = $PSScriptRoot
 $hostDir      = Split-Path -Path $despliegue -Parent
@@ -154,6 +174,39 @@ foreach ($nombre in $desdeDespliegue) {
 Copy-Item -LiteralPath (Join-Path $hostDir 'App.config') `
     -Destination (Join-Path $raizPaquete ($nombrePaquete + '.exe.config'))
 
+# ------------------------------------------------------------------ token -----
+# El paquete viaja con token.txt ya escrito: en una caja sin .env a la vista el
+# host arranca con él desde el primer intento, y el instalador lo reemplaza por
+# el de la API si esa caja sí lo tiene. Un token por paquete evita que todas las
+# cajas compartan el mismo secreto.
+function NuevoToken {
+    # Mismo generador que Instalar.ps1: 32 bytes al azar en base64url (43
+    # caracteres, dentro del alfabeto que valida RegistrarArranqueAutomatico).
+    $bytes = New-Object byte[] 32
+    $azar = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $azar.GetBytes($bytes) } finally { $azar.Dispose() }
+    return [Convert]::ToBase64String($bytes).Replace('+', '-').Replace('/', '_').TrimEnd([char] '=')
+}
+
+$tokenPaquete = $null
+if (-not $SinToken) {
+    if ($Token) {
+        if ($Token -notmatch '^[A-Za-z0-9._-]{32,}$') {
+            throw 'El token debe tener 32 caracteres o mas y usar solo letras, numeros, punto, guion y guion bajo.'
+        }
+        $tokenPaquete = $Token
+    }
+    else {
+        $tokenPaquete = NuevoToken
+    }
+
+    # Sin BOM y con un solo salto de línea: IniciarPerifericos.cmd lo lee con
+    # "set /p", que arrastraría el BOM dentro del token.
+    [System.IO.File]::WriteAllText((Join-Path $raizPaquete 'token.txt'),
+        $tokenPaquete + [Environment]::NewLine,
+        (New-Object System.Text.UTF8Encoding($false)))
+}
+
 # ------------------------------------------------------------------ version ---
 $git = Get-Command git.exe -ErrorAction SilentlyContinue
 $commit = 'desconocido'
@@ -176,6 +229,7 @@ $version = @(
     ('Sin confirmar en el repo : ' + $(if ($sucio) { 'si' } else { 'no' }))
     ('Máquina   : ' + $env:COMPUTERNAME)
     ('Compilado : ' + $(if ($SinCompilar) { 'no (se reutilizó bin\Release)' } else { 'sí, Release' }))
+    ('Token     : ' + $(if ($tokenPaquete) { 'token.txt incluido' } else { 'sin token.txt' }))
 )
 $version | Set-Content -LiteralPath (Join-Path $raizPaquete 'version.txt') -Encoding UTF8
 
@@ -190,6 +244,13 @@ foreach ($item in $items) {
     Write-Host ('   {0,-40} {1,10:N0} B' -f $item.Name, $item.Length) -ForegroundColor Gray
 }
 Write-Host ('   {0,-40} {1,10:N0} B' -f ($items.Count.ToString() + ' archivos'), $total) -ForegroundColor White
+
+if ($tokenPaquete) {
+    Write-Host ''
+    Write-Host '  Token pregrabado en token.txt:' -ForegroundColor Yellow
+    Write-Host ('   ' + $tokenPaquete) -ForegroundColor Yellow
+    Write-Host '  (la caja lo reusa si la API no tiene .env; -Token lo fija, -SinToken lo omite)' -ForegroundColor DarkGray
+}
 
 # --------------------------------------------------------------------- zip ----
 $zip = $null
@@ -219,5 +280,5 @@ Write-Host '  Para instalar en la caja:' -ForegroundColor Cyan
 Write-Host '   1. Copie la carpeta completa (o descomprima el ZIP) en la PC de la caja.'
 Write-Host '   2. Si bajó el ZIP de otra máquina o de internet:  Get-ChildItem | Unblock-File'
 Write-Host '   3. powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1'
-Write-Host '      (toma el PERIFERICOS_TOKEN del .env de la API; -Token lo fuerza)'
+Write-Host '      (adopta el PERIFERICOS_TOKEN del .env de la API; sin .env reusa el token.txt del paquete)'
 Write-Host ''

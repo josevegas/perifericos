@@ -16,8 +16,9 @@ REQUISITOS DE LA CAJA
   - Pinpad Ingenico/Niubiz conectado por USB y encendido.
   - Impresora térmica ESC/POS instalada en Windows.
   - El token del servicio, que es un secreto compartido con la API de FastAPI.
-    No hace falta conseguirlo a mano: el instalador lo toma del .env de la API
-    si la API vive en esta misma PC (ver "EL TOKEN DEL SERVICIO").
+    No hace falta conseguirlo a mano: el paquete ya trae uno pregrabado en
+    token.txt y, si la API vive en esta misma PC, el instalador adopta su
+    PERIFERICOS_TOKEN (ver "EL TOKEN DEL SERVICIO").
 
 INSTALACIÓN EN 3 PASOS
   1. Copie ESTA CARPETA COMPLETA a la PC de la caja, por ejemplo a
@@ -38,6 +39,10 @@ INSTALACIÓN EN 3 PASOS
      .env, adopta su PERIFERICOS_TOKEN y deja los dos lados iguales. Si la API
      todavía no tiene token, genera uno y lo escribe en los dos archivos; lo
      único que queda por hacer a mano es reiniciar la API.
+
+     Si no aparece ningún .env, el host igual arranca: reusa el token.txt que
+     viene pregrabado en el paquete y el informe lo imprime para que lo copie
+     en PERIFERICOS_TOKEN de la API.
 
      Puede fijar la impresora a mano, si hay más de una:
 
@@ -83,8 +88,11 @@ EL TOKEN DEL SERVICIO
     1. De -Token, si se lo pasó.
     2. De -TokenAuto, que genera uno nuevo y rota con él el de la API.
     3. Del .env de la API, si declara PERIFERICOS_TOKEN con valor.
-    4. Del token.txt que ya exista en esta carpeta.
+    4. Del token.txt que ya exista en esta carpeta: el que trae el paquete.
     5. Y si no, genera uno y lo escribe en los dos lados.
+
+  El token.txt del paquete es un valor al azar que se genera al armarlo, distinto
+  en cada paquete. Se reemplaza solo cuando la API tiene uno propio: la API manda.
 
   Antes de tocar el .env guarda un respaldo: el anterior queda como .env.bak en
   la carpeta de la API.
@@ -101,6 +109,9 @@ EL TOKEN DEL SERVICIO
   En ese caso el instalador genera el token, lo imprime en pantalla y deja
   token.txt con él; hay que copiarlo a PERIFERICOS_TOKEN en la API y reiniciarla.
 
+  Con el token pregrabado del paquete no hay que hacer nada más que copiarlo a
+  la API: el informe lo muestra tal cual, por si esa caja no tiene .env.
+
 TARJETA DE REFERENCIA
   Instalar o reparar         .\Instalar.ps1 [-Impresora "..."]
   Instalar con token nuevo   .\Instalar.ps1 -TokenAuto
@@ -111,6 +122,8 @@ TARJETA DE REFERENCIA
   Arrancar viendo la consola .\IniciarPerifericos.cmd
   Estado del arranque        Get-ScheduledTaskInfo -TaskName 'SmartOne.Perifericos.Host'
   Armar el paquete           .\CrearPaquete.ps1 -DetenerServicio
+  Paquete con token fijo     .\CrearPaquete.ps1 -Token "<32 caracteres o más>"
+  Paquete sin token.txt      .\CrearPaquete.ps1 -SinToken
 
   LastTaskResult 267009 (0x41301) significa "en ejecución". El valor
   2147946720 (0x800710E0) que aparece cuando el host ya está corriendo es la
@@ -146,6 +159,12 @@ SI ALGO FALLA
     El host no arranca sin token. Ejecute .\Instalar.ps1 —toma el de la API o
     genera uno y lo deja en los dos lados— o escriba token.txt a mano (una sola
     línea, 32 caracteres o más).
+
+  "Ya hay un servicio de periféricos en marcha en esta sesión de Windows"
+    Se lanzó el host cuando ya estaba corriendo: el reintento automático de cada
+    minuto, o un doble clic. No es un error. Sólo hay que detenerlo y volver a
+    arrancarlo si cambió token.txt o SmartOne.Perifericos.Host.exe.config, para
+    que lea los valores nuevos.
 
   HTTP 401 en las pruebas
     token.txt no coincide con PERIFERICOS_TOKEN de FastAPI. Vuelva a ejecutar
@@ -184,6 +203,7 @@ ARCHIVOS DEL PAQUETE
   Instalar.ps1                         Instalador y verificador de esta caja
   LEEME.txt                            Este archivo
   version.txt                          Commit y fecha con que se armó el paquete
+  token.txt                            Token pregrabado: la caja arranca sin tocar el .env
 
   CrearPaquete.ps1 no viene en el paquete: se ejecuta en la máquina de
   desarrollo para volver a armarlo.

@@ -135,6 +135,24 @@ sin privilegios, y se detiene con la sesión. Mientras el host vive, los intento
 del keep-alive no abren una segunda instancia (`MultipleInstances IgnoreNew`);
 si el operador cierra la ventana, el servicio vuelve solo en el siguiente minuto.
 
+El arranque está protegido por partida doble, porque el reintento de cada minuto
+puede coincidir con una instancia anterior que todavía esté soltando el puerto
+5005:
+
+- `IniciarPerifericos.cmd` mira antes si el proceso ya está en la tabla de
+  `tasklist` y, si está, termina con código 0 sin lanzarlo —así `host.log` no se
+  llena de arranques que no ocurrieron—.
+- El `.exe` toma un mutex con nombre (`Local\SmartOne.Perifericos.Host.5005`,
+  por sesión de Windows) antes de inicializar la PCL. La copia que no lo consigue
+  avisa `Ya hay un servicio de periféricos en marcha en esta sesión de Windows` y
+  sale con código 0, sin tocar el puerto ni registrar un fallo falso. Si el
+  proceso anterior murió de golpe, el mutex queda abandonado y el primero que
+  llegue lo recupera: no hay bloqueo huérfano que impida el reinicio.
+
+Para que un cambio de `token.txt` o del `.exe.config` surta efecto hay que
+detener el host y volver a arrancarlo: la copia nueva se cierra sola mientras la
+vieja siga viva.
+
 Si `HttpListener` devolviera acceso denegado al arrancar en otra máquina —no es
 el caso de un prefijo de bucle local—, registra la reserva una vez desde una
 consola elevada para la cuenta que ejecutará el host:
@@ -156,7 +174,7 @@ copiar el mismo valor entre `token.txt` y `PERIFERICOS_TOKEN`. El orden es:
 | 1         | `-Token`                  | Se pasa a mano                            |
 | 2         | `-TokenAuto`              | Se quiere rotar el secreto                |
 | 3         | `.env` de la API          | Declara `PERIFERICOS_TOKEN` con valor     |
-| 4         | `token.txt` de la caja    | La caja ya tenía uno                      |
+| 4         | `token.txt` de la caja    | La caja ya tenía uno, o trae el paquete   |
 | 5         | Generado                  | Ni el `.env` ni la caja tenían uno        |
 
 El valor se valida **antes** de registrar la tarea: con un token inválido el
@@ -377,20 +395,32 @@ cola térmica reconocible. No se usa la impresora predeterminada.
 
 `CrearPaquete.ps1` (en `Host\Despliegue`, se queda en el repo y **no** viaja en
 el paquete) compila en Release y arma `dist\SmartOne.Perifericos.Host\` con los
-14 archivos que necesita una caja, más un ZIP hermano para copiar por red o
+15 archivos que necesita una caja, más un ZIP hermano para copiar por red o
 llevar en un pendrive.
 
 ```powershell
 .\CrearPaquete.ps1                       # compila y empaqueta en dist\
 .\CrearPaquete.ps1 -SinCompilar          # reusa lo último compilado
 .\CrearPaquete.ps1 -DetenerServicio      # si el host corre en esta máquina (lo vuelve a levantar)
+.\CrearPaquete.ps1 -Token 'p0s_Caja3_2026_ClaveServicioLocal'   # fija el token que viaja en token.txt
+.\CrearPaquete.ps1 -SinToken             # paquete sin token.txt: la caja lo resuelve al instalar
 ```
 
 El `.exe.config` del paquete se **regenera desde `Host\App.config`**, no se copia
 de `bin\Release`: así `impresora_ticket` sale vacío y el paquete no arrastra el
-nombre de la impresora de la máquina donde se compiló. Tampoco lleva
-`token.txt`, `*.log` ni `*.pdb`, y `version.txt` deja constancia del commit, la
-rama y la fecha de armado.
+nombre de la impresora de la máquina donde se compiló. Tampoco lleva `*.log` ni
+`*.pdb`, y `version.txt` deja constancia del commit, la rama, la fecha de armado
+y si el paquete incluyó token.
+
+El paquete sale con `token.txt` pregrabado: 32 bytes al azar generados en cada
+armado —uno distinto por paquete, para que las cajas no compartan secreto—, o el
+valor de `-Token` si se quiere fijar uno. Con `-SinToken` el archivo no se
+incluye. Se escribe sin BOM y con un solo salto de línea porque
+`IniciarPerifericos.cmd` lo lee con `set /p`, que arrastraría un BOM dentro del
+token. En la caja, ese token es el que entra en juego cuando no aparece ningún
+`.env` de la API (prioridad 4 de [El token de la caja](#el-token-de-la-caja)); si
+la API tiene uno propio, su valor manda y `token.txt` se reescribe con el de
+ella.
 
 En la caja, el paquete se instala y se verifica con `Instalar.ps1`, que es
 idempotente y no necesita consola elevada:
@@ -431,7 +461,8 @@ Hace cinco pasos y termina con un informe; devuelve `exit 1` si algo quedó en
    que reiniciarlo— y además se saltea la prueba del pinpad.
 
 `-TokenAuto` genera 32 bytes al azar en base64url (43 caracteres, dentro del
-alfabeto que valida el registrador) y lo imprime. La carpeta viaja **sin**
-`token.txt`: el token se decide en la caja. En el caso normal —la API en la
-misma máquina— no hay nada que pegar: el instalador adopta el token del `.env`
-y, si la API todavía no tiene uno, lo escribe él mismo en los dos lados.
+alfabeto que valida el registrador) y lo imprime. En el caso normal —la API en la
+misma máquina— no hay nada que pegar: el instalador adopta el token del `.env` y,
+si la API todavía no tiene uno, lo escribe él mismo en los dos lados. Cuando no
+hay `.env` a la vista, el host arranca de una con el `token.txt` del paquete y el
+informe imprime ese valor para copiarlo en `PERIFERICOS_TOKEN` de la API.

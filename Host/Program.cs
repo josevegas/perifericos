@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using PuntoVenta.Services;
 
@@ -6,7 +7,51 @@ namespace PuntoVenta.Perifericos.Host
 {
     internal static class Program
     {
+        // Una instancia por sesión de Windows. El nombre lleva el puerto porque
+        // lo que se protege es el 5005, no el archivo ejecutable.
+        private const string NombreInstancia = @"Local\SmartOne.Perifericos.Host.5005";
+
+        // Vive lo que vive el proceso: si se recolectara, el bloqueo se soltaría
+        // y una segunda copia se creería la única.
+        private static readonly Mutex Instancia = new Mutex(false, NombreInstancia);
+
         private static void Main()
+        {
+            // El reintento de la tarea programada puede lanzar esta copia antes
+            // de que la anterior termine de soltar el puerto. Sale sin error, en
+            // vez de competir por el 5005 y dejar un fallo en host.log.
+            if (!TomarInstancia())
+            {
+                Console.WriteLine(
+                    "Ya hay un servicio de periféricos en marcha en esta sesión de Windows; " +
+                    "esta copia no arranca.");
+                return;
+            }
+
+            try
+            {
+                Ejecutar();
+            }
+            finally
+            {
+                Instancia.ReleaseMutex();
+            }
+        }
+
+        private static bool TomarInstancia()
+        {
+            try
+            {
+                return Instancia.WaitOne(0, false);
+            }
+            catch (AbandonedMutexException)
+            {
+                // La instancia anterior murió sin soltarlo: el bloqueo es nuestro.
+                return true;
+            }
+        }
+
+        private static void Ejecutar()
         {
             string token = Environment.GetEnvironmentVariable("PERIFERICOS_TOKEN");
             if (string.IsNullOrWhiteSpace(token) || token.Length < 32)

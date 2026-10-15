@@ -16,6 +16,10 @@
     lo deja en token.txt; si la clave está vacía, genera uno y lo escribe en los
     dos lados. Con -SinTocarApi el .env no se lee ni se escribe.
 
+    El paquete de despliegue viaja con token.txt pregrabado, así que una caja
+    donde no aparezca ningún .env arranca con ese valor desde el primer intento;
+    el informe lo imprime para copiarlo en PERIFERICOS_TOKEN de la API.
+
     El informe usa tres niveles:
 
       OK     el requisito se cumple.
@@ -27,7 +31,7 @@
 .PARAMETER Token
     Token del servicio. Debe ser el mismo valor que PERIFERICOS_TOKEN en la API
     de FastAPI. Si se omite, se adopta el de la API; y si tampoco hay, si ya
-    existe token.txt se reutiliza.
+    existe token.txt se reutiliza —el paquete trae uno pregrabado—.
 
 .PARAMETER TokenAuto
     Genera un token nuevo con el generador criptográfico de Windows y rota con
@@ -487,6 +491,8 @@ if (-not $SinTocarApi) {
 
 $generado      = $false
 $adoptado      = $false
+$desdeTxt      = $false
+$escritoEnApi  = $false
 $tokenEfectivo = $null
 $tokenTxtActual = $null
 if (Test-Path -LiteralPath $tokenTxt -PathType Leaf) { $tokenTxtActual = (Get-Content -LiteralPath $tokenTxt -Raw).Trim() }
@@ -507,6 +513,7 @@ elseif (-not $SinTocarApi -and $tokenEnv) {
 }
 elseif ($tokenTxtActual) {
     $tokenEfectivo = $tokenTxtActual
+    $desdeTxt = $true
     Anota 'OK' 'Token reutilizado del token.txt de esta caja.'
 }
 elseif (-not $SinTocarApi -and $rutaEnv) {
@@ -555,6 +562,7 @@ if (-not $SinTocarApi -and $rutaEnv) {
     if ($tokenEnv -ne $tokenEfectivo) {
         try {
             EscribirTokenEnEnv -Ruta $rutaEnv -Valor $tokenEfectivo
+            $escritoEnApi = $true
             Anota 'OK' 'PERIFERICOS_TOKEN escrito en el .env de la API (respaldo: .env.bak).'
             Anota 'AVISO' 'Reinicie la API de FastAPI: pydantic lee PERIFERICOS_TOKEN sólo al arrancar.'
         }
@@ -563,6 +571,7 @@ if (-not $SinTocarApi -and $rutaEnv) {
         }
     }
     else {
+        $escritoEnApi = $true
         Anota 'OK' 'El PERIFERICOS_TOKEN del .env ya coincide con el del host.'
     }
 }
@@ -571,7 +580,7 @@ if ($generado) {
     Write-Host ''
     Write-Host '  Token de esta caja:' -ForegroundColor Yellow
     Write-Host ('   ' + $tokenEfectivo) -ForegroundColor Yellow
-    if ($rutaEnv -and $tokenEnv -eq $tokenEfectivo) {
+    if ($escritoEnApi) {
         Write-Host '  Ya quedó escrito en el .env de la API.' -ForegroundColor Yellow
     }
     else {
@@ -580,6 +589,19 @@ if ($generado) {
 }
 
 if ($adoptado) { Write-Host '  Token tomado de la API; no hay nada que copiar.' -ForegroundColor DarkGray }
+elseif ($desdeTxt) {
+    # El token salió de token.txt —el que trajo el paquete o el de esta caja—:
+    # es el valor que hay que dejar en la API, y nadie lo puede adivinar.
+    Write-Host ''
+    Write-Host '  Token de esta caja, el de token.txt:' -ForegroundColor Yellow
+    Write-Host ('   ' + $tokenEfectivo) -ForegroundColor Yellow
+    if ($escritoEnApi) {
+        Write-Host '  Ya quedó escrito en el .env de la API.' -ForegroundColor Yellow
+    }
+    else {
+        Write-Host '  Cópielo tal cual en PERIFERICOS_TOKEN de la API de FastAPI.' -ForegroundColor Yellow
+    }
+}
 
 # ------------------------------------------------- arranque y prueba de humo --
 Titulo 'Arranque y prueba de humo'
