@@ -5,7 +5,8 @@
 .DESCRIPTION
     Deja una caja lista para operar. Comprueba los requisitos de la máquina
     (Windows de 64 bits, .NET Framework 4.8 y los archivos del paquete), revisa
-    la cola de la impresora de tickets y el pinpad, fija la impresora en el
+    la cola de la impresora de tickets —y la crea si se pide con
+    -PrepararImpresora— y el pinpad, fija la impresora en el
     .exe.config si se indica, escribe el token del servicio, registra el
     arranque automático, levanta el host y hace la prueba de humo contra el
     puerto 5005.
@@ -53,6 +54,12 @@
     "Impresoras y escáneres". Se escribe en impresora_ticket del .exe.config.
     Si se omite, el módulo busca una cola térmica por el nombre.
 
+.PARAMETER PrepararImpresora
+    Si la caja todavía no tiene la cola de la ticketera, la crea llamando a
+    PrepararImpresora.ps1, que pide permisos de administrador. Sin este
+    modificador la cola que falta es sólo un AVISO: una caja ya instalada no
+    vuelve a pedir UAC para comprobarse.
+
 .PARAMETER Usuario
     Cuenta cuyo inicio de sesión arranca el servicio. Por defecto, la actual.
 
@@ -77,6 +84,11 @@
     .\Instalar.ps1 -TokenAuto -Impresora 'EPSON TM-T20II Receipt'
 
 .EXAMPLE
+    .\Instalar.ps1 -PrepararImpresora -Impresora 'EPSON TM-T20III'
+    Crea la cola de la ticketera si falta, la fija en el .exe.config y deja la
+    caja operando.
+
+.EXAMPLE
     .\Instalar.ps1 -EnvApi 'D:\api\.env' -SinArrancar
 
 .EXAMPLE
@@ -89,6 +101,7 @@ param(
     [string] $EnvApi,
     [switch] $SinTocarApi,
     [string] $Impresora,
+    [switch] $PrepararImpresora,
     [string] $Usuario,
     [string] $NombreTarea = 'SmartOne.Perifericos.Host',
     [switch] $SinArrancar,
@@ -110,6 +123,7 @@ $exe         = Join-Path $raiz 'SmartOne.Perifericos.Host.exe'
 $config      = Join-Path $raiz 'SmartOne.Perifericos.Host.exe.config'
 $lanzador    = Join-Path $raiz 'IniciarPerifericos.cmd'
 $registrador = Join-Path $raiz 'RegistrarArranqueAutomatico.ps1'
+$preparador  = Join-Path $raiz 'PrepararImpresora.ps1'
 $tokenTxt    = Join-Path $raiz 'token.txt'
 $puerto      = 5005
 
@@ -389,12 +403,52 @@ $colas = @(Get-CimInstance -ClassName Win32_Printer -ErrorAction SilentlyContinu
 # Es el mismo patrón que usa ImpresionService para reconocer una cola térmica.
 $patronTermica = 'TM-T|TM-U|EPSON TM|RECEIPT|TICKET|THERMAL|POS-'
 
+$hayTermica = $false
+if ($Impresora) {
+    $hayTermica = $colas -contains $Impresora
+}
+else {
+    $hayTermica = @($colas | Where-Object { $_ -match $patronTermica }).Count -gt 0
+}
+
+if (-not $hayTermica -and $PrepararImpresora) {
+    Titulo 'Creando la cola de la ticketera'
+
+    if (-not (Test-Path -LiteralPath $preparador)) {
+        Anota 'AVISO' 'No está PrepararImpresora.ps1 en la carpeta del paquete: la cola hay que crearla a mano.'
+    }
+    else {
+        # El asistente pide los permisos por su cuenta, así que sólo se pide UAC
+        # cuando de verdad va a crear algo.
+        $argumentos = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $preparador + '"'))
+        if ($Impresora) {
+            $argumentos += @('-Nombre', ('"' + $Impresora + '"'))
+        }
+
+        try {
+            $proceso = Start-Process -FilePath 'powershell.exe' -ArgumentList $argumentos -Verb RunAs -Wait -PassThru
+            if ($proceso.ExitCode -eq 0) {
+                Anota 'OK' 'PrepararImpresora.ps1 terminó bien.'
+            }
+            else {
+                Anota 'AVISO' ('PrepararImpresora.ps1 terminó con código ' + $proceso.ExitCode + '. Revise su informe en la consola que se abrió.')
+            }
+        }
+        catch {
+            Anota 'AVISO' 'No se pudo abrir PrepararImpresora.ps1 elevado (¿se canceló el aviso de Windows?).'
+        }
+
+        $colas = @(Get-CimInstance -ClassName Win32_Printer -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty Name)
+    }
+}
+
 if ($Impresora) {
     if ($colas -contains $Impresora) {
         Anota 'OK' ("La cola '" + $Impresora + "' está instalada.")
     }
     else {
-        Anota 'FALLO' ("No hay ninguna cola llamada '" + $Impresora + "'. Instaladas: " + ($colas -join ', ') + '.')
+        Anota 'FALLO' ("No hay ninguna cola llamada '" + $Impresora + "'. Instaladas: " + ($colas -join ', ') + '. Use -PrepararImpresora para crearla.')
     }
 }
 else {
@@ -406,7 +460,7 @@ else {
         Anota 'AVISO' ('Hay más de una cola que parece térmica (' + ($termicas -join ', ') + '). Fije la buena con -Impresora "<nombre>".')
     }
     else {
-        Anota 'AVISO' ('No hay ninguna impresora térmica instalada. Instaladas: ' + ($colas -join ', ') + '. Sin ella no se imprimen comprobantes.')
+        Anota 'AVISO' ('No hay ninguna impresora térmica instalada. Instaladas: ' + ($colas -join ', ') + '. Sin ella no se imprimen comprobantes. Ejecute .\PrepararImpresora.ps1 para crear la cola, o vuelva a este instalador con -PrepararImpresora.')
     }
 }
 

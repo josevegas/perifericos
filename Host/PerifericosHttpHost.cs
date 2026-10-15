@@ -432,7 +432,8 @@ namespace PuntoVenta.Perifericos.Host
             ComprobanteImpresion venta = solicitud.venta.AModelo();
             if (venta == null)
             {
-                await ResponderAsync(contexto, 400, Error("La venta debe traer una 'linea'."));
+                await ResponderAsync(
+                    contexto, 400, Error("La venta debe traer al menos una línea válida."));
                 return;
             }
 

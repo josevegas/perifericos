@@ -58,6 +58,10 @@
       <Link>Instalar.ps1</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="Despliegue\PrepararImpresora.ps1">
+      <Link>PrepararImpresora.ps1</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Include="Despliegue\LEEME.txt">
       <Link>LEEME.txt</Link>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

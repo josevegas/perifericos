@@ -14,7 +14,8 @@ REQUISITOS DE LA CAJA
   - .NET Framework 4.8. Viene de fábrica en Windows 10 1903 o superior.
     Si falta: https://dotnet.microsoft.com/download/dotnet-framework/net48
   - Pinpad Ingenico/Niubiz conectado por USB y encendido.
-  - Impresora térmica ESC/POS instalada en Windows.
+  - Impresora térmica ESC/POS instalada en Windows. Si la ticketera está
+    conectada pero todavía no tiene su cola, ver "IMPRESORA DE TICKETS".
   - El token del servicio, que es un secreto compartido con la API de FastAPI.
     No hace falta conseguirlo a mano: el paquete ya trae uno pregrabado en
     token.txt y, si la API vive en esta misma PC, el instalador adopta su
@@ -48,6 +49,11 @@ INSTALACIÓN EN 3 PASOS
 
         powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -Impresora "EPSON TM-T20II Receipt"
 
+     Y si la caja todavía no tiene la cola de la ticketera, el instalador la
+     puede crear en la misma pasada (pide permisos de administrador):
+
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -PrepararImpresora
+
      Sólo si la API está en OTRA máquina hay que llevar el token a mano:
 
         powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -SinTocarApi
@@ -61,6 +67,7 @@ QUÉ HACE EL INSTALADOR
   1. Comprueba Windows x64 y .NET Framework 4.8.                    (bloqueante)
   2. Comprueba que estén los 10 archivos del paquete.               (bloqueante)
   3. Revisa la impresora térmica y el pinpad.                     (sólo aviso)
+     Con -PrepararImpresora, además crea la cola que falte.
   4. Si pasa -Impresora, la fija en impresora_ticket del .exe.config.
   5. Resuelve el token con la API (ver "EL TOKEN DEL SERVICIO"), escribe
      token.txt y registra la tarea programada de arranque automático.
@@ -71,11 +78,41 @@ QUÉ HACE EL INSTALADOR
   instalarse sin ellos y conectarlos después. Lo que sí bloquea es una máquina
   de 32 bits, la falta de .NET 4.8 o un archivo faltante.
 
-  En este momento el pinpad NO está conectado y no hay impresora térmica:
-  los pasos 3, 4 y 6 saldrán como AVISO. Es lo esperado.
-
   Si algo sale FALLO, el instalador no registra ni arranca nada y termina con
   código 1. Corrija y vuelva a ejecutarlo.
+
+IMPRESORA DE TICKETS
+  El módulo imprime por el spooler de Windows, con datos ESC/POS crudos, y sólo
+  en la cola de la ticketera: NUNCA usa la impresora predeterminada. Por eso una
+  cola mal elegida no imprime en cualquier lado, se niega a imprimir.
+
+  Una ticketera recién conectada por USB aparece en el Administrador de
+  dispositivos, pero no siempre aparece en "Impresoras y escáneres". Hasta que no
+  exista la cola, el host responde disponible:false y no imprime. Este script
+  crea esa cola con el driver de bandeja "Generic / Text Only" (el que deja
+  pasar los bytes ESC/POS sin reinterpretarlos) sobre el primer puerto USB libre:
+
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\PrepararImpresora.ps1
+
+  Pide permisos de administrador: se vuelve a abrir solo y hay que aceptar el
+  aviso de Windows. Es idempotente: si la cola ya existe con ese driver no toca
+  nada. Otras formas de usarlo:
+
+        .\PrepararImpresora.ps1 -Nombre "EPSON TM-T20III"   otro nombre de cola
+        .\PrepararImpresora.ps1 -Puerto "LPT1"              otro puerto
+        .\PrepararImpresora.ps1 -Forzar                     la rehace
+        .\PrepararImpresora.ps1 -Quitar                     la elimina
+
+  El nombre de la cola importa: si no se fija con -Impresora, el módulo busca una
+  cola que contenga TM-T, TM-U, EPSON TM, RECEIPT, TICKET, THERMAL o POS-, en ese
+  orden. "EPSON TM-T20III" lo cumple.
+
+  Después de crearla no hace falta reiniciar el host: el módulo resuelve la
+  impresora en cada comprobante.
+
+  Si prefiere hacerlo a mano: Configuración > Impresoras y escáneres > Agregar
+  una impresora > "Agregar una impresora local manualmente" > puerto USB001 >
+  controlador "Generic / Text Only" > nombre "EPSON TM-T20III".
 
 EL TOKEN DEL SERVICIO
   El token es un secreto compartido: la API lo manda en el encabezado
@@ -119,6 +156,8 @@ TARJETA DE REFERENCIA
   API en otra máquina        .\Instalar.ps1 -SinTocarApi
   Comprobar sin arrancar     .\Instalar.ps1 -SinArrancar
   Detener y desinstalar      .\Instalar.ps1 -Quitar
+  Crear la cola de tickets   .\PrepararImpresora.ps1
+  Cola y todo de una vez     .\Instalar.ps1 -PrepararImpresora
   Arrancar viendo la consola .\IniciarPerifericos.cmd
   Estado del arranque        Get-ScheduledTaskInfo -TaskName 'SmartOne.Perifericos.Host'
   Armar el paquete           .\CrearPaquete.ps1 -DetenerServicio
@@ -177,6 +216,12 @@ SI ALGO FALLA
     la cola coincide con TM-T, TM-U, EPSON TM, RECEIPT, TICKET, THERMAL o POS-,
     o hay que fijarla: .\Instalar.ps1 -Impresora "nombre exacto de la cola".
 
+    Si la ticketera está conectada y aun así sale disponible:false, lo más
+    probable es que falte la cola en Windows: ejecute .\PrepararImpresora.ps1 o
+    revise la sección "IMPRESORA DE TICKETS". El detalle del error lo dice el
+    propio /api/v1/impresion/estado en el campo "detalle", y quedan rastros en
+    el Visor de eventos, registro PrintService/Operational.
+
   El pinpad no responde
     Revise que esté encendido y con su USB. Si el 401 no es el problema,
     pinpad.log dice en qué paso se quedó (apertura de PCL o espera del canal).
@@ -201,6 +246,7 @@ ARCHIVOS DEL PAQUETE
   IniciarPerifericos.cmd               Arranque a mano, con consola visible
   RegistrarArranqueAutomatico.ps1      Registra la tarea de arranque automático
   Instalar.ps1                         Instalador y verificador de esta caja
+  PrepararImpresora.ps1                Crea la cola de la ticketera (pide UAC)
   LEEME.txt                            Este archivo
   version.txt                          Commit y fecha con que se armó el paquete
   token.txt                            Token pregrabado: la caja arranca sin tocar el .env

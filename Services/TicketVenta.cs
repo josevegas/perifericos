@@ -144,7 +144,7 @@ namespace PuntoVenta.Services
             t.Append('\n').Append(EscPos.Centro).Append(EscPos.NegritaOn);
 
             if (copia) t.Append("** COPIA **\n");
-            t.Append(Titulo(venta.TipoDocumento)).Append(" ELECTRONICA\n")
+            t.Append(Titulo(venta.TipoDocumento)).Append('\n')
              .Append(venta.SerieNumero).Append('\n')
              .Append(EscPos.NegritaOff);
 
@@ -179,15 +179,13 @@ namespace PuntoVenta.Services
             return Recortar(razon + " - " + documento, EscPos.Columnas - 9);
         }
 
-        // Ancho de cada columna. 24+1+9+1+5+1+8+1+14 = 64, justo EscPos.Columnas.
-        // Con la fuente chica sobra lugar: el nombre mas largo del catalogo
-        // ("GASOHOL PREMIUM") son 15 y entra holgado en 24.
+        // Ancho de cada columna: 24+1+9+1+5+1+8+1+14 = 64.
         //
         // El importe va SIN el prefijo "S/": la cabecera de la columna ya dice
         // IMPORTE, igual que en el ticket real, y ademas con separador de miles
         // "S/ 3,463.20" son 11 caracteres contra los 8 del numero solo.
         private const int AnchoProducto = 24;
-        private const int AnchoCantidad = 9;   // "130.000" del diesel, con holgura
+        private const int AnchoCantidad = 9;
         private const int AnchoUnidad = 5;     // "U.MED" del encabezado son 5
         private const int AnchoPrecio = 8;
         private const int AnchoImporte = 14;   // "3,463.20" y lo que venga
@@ -198,17 +196,33 @@ namespace PuntoVenta.Services
             t.Append(FilaProducto("PRODUCTO", "CANT.", "U.MED", "PRECIO", "IMPORTE")).Append('\n');
             t.Append(EscPos.Separador()).Append('\n');
 
-            if (venta.Linea == null) return;
-
+            if (venta.Lineas != null && venta.Lineas.Count > 0)
             {
-                LineaComprobanteImpresion linea = venta.Linea;
-                t.Append(FilaProducto(
-                    linea.Descripcion,
-                    Numero(linea.Galones, 3),
-                    "GLL",              // todo lo que se despacha acá va en galones
-                    Numero(linea.Precio, 2),
-                    Numero(linea.Total, 2))).Append('\n');
+                foreach (LineaComprobanteImpresion linea in venta.Lineas)
+                {
+                    AgregarLinea(t, linea);
+                }
             }
+            else if (venta.Linea != null)
+            {
+                AgregarLinea(t, venta.Linea);
+            }
+        }
+
+        private static void AgregarLinea(StringBuilder t, LineaComprobanteImpresion linea)
+        {
+            if (linea == null) return;
+            decimal cantidad = linea.Cantidad ?? linea.Galones;
+            string unidad = string.IsNullOrWhiteSpace(linea.Unidad) ? "GLL" : linea.Unidad;
+            int decimalesCantidad = string.Equals(unidad, "GLL", StringComparison.OrdinalIgnoreCase)
+                ? 3
+                : 0;
+            t.Append(FilaProducto(
+                linea.Descripcion,
+                Numero(cantidad, decimalesCantidad),
+                unidad,
+                Numero(linea.Precio, 2),
+                Numero(linea.Total, 2))).Append('\n');
         }
 
         /// <summary>Una fila de la tabla del detalle, en sus 5 columnas fijas.</summary>
@@ -225,8 +239,10 @@ namespace PuntoVenta.Services
         private static void Totales(StringBuilder t, ComprobanteImpresion venta)
         {
             t.Append(EscPos.Separador()).Append('\n');
-            t.Append(EscPos.Fila("OP. GRAVADA", Monto(venta.Subtotal))).Append('\n');
-            t.Append(EscPos.Fila("IGV (18%)", Monto(venta.Igv))).Append('\n');
+            t.Append(EscPos.Fila("SUBTOTAL", Monto(venta.Subtotal))).Append('\n');
+            decimal igvPorcentaje = venta.IgvPorcentaje > 0m ? venta.IgvPorcentaje : 18m;
+            t.Append(EscPos.Fila(
+                "IGV (" + Numero(igvPorcentaje, 2) + "%)", Monto(venta.Igv))).Append('\n');
             t.Append(EscPos.NegritaOn)
              .Append(EscPos.Fila("TOTAL", Monto(venta.Total))).Append('\n')
              .Append(EscPos.NegritaOff);

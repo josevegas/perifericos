@@ -13,9 +13,12 @@ namespace PuntoVenta.Models.Impresion
         public string ClienteRazon { get; set; }
         public decimal Subtotal { get; set; }
         public decimal Igv { get; set; }
+        public decimal IgvPorcentaje { get; set; }
         public decimal Total { get; set; }
         public decimal Vuelto { get; set; }
         public string CondicionPago { get; set; }
+        public List<LineaComprobanteImpresion> Lineas { get; set; }
+        // Compatibilidad con comprobantes antiguos que solo traen una línea.
         public LineaComprobanteImpresion Linea { get; set; }
         public List<PagoComprobanteImpresion> Pagos { get; set; }
     }
@@ -23,6 +26,9 @@ namespace PuntoVenta.Models.Impresion
     public sealed class LineaComprobanteImpresion
     {
         public string Descripcion { get; set; }
+        public decimal? Cantidad { get; set; }
+        public string Unidad { get; set; }
+        // Compatibilidad con comprobantes antiguos de despacho en galones.
         public decimal Galones { get; set; }
         public decimal Precio { get; set; }
         public decimal Total { get; set; }

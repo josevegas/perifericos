@@ -373,7 +373,9 @@ cola térmica reconocible. No se usa la impresora predeterminada.
   `PclUtilities.dll`, `dllsign.dll`, `msvcp110.dll` y `msvcr110.dll` desde
   `nativas`. Son dependencias nativas y no se cargan desde el ensamblado .NET.
 - Instalar la impresora térmica en Windows. El módulo envía comandos ESC/POS
-  en modo RAW a la cola indicada.
+  en modo RAW a la cola indicada. Si la ticketera está conectada pero Windows
+  todavía no le creó la cola, ver
+  [Cola de impresión de la ticketera](#cola-de-impresión-de-la-ticketera).
 - Enchufar el pinpad por USB y encenderlo. Windows debe publicarlo como puerto
   serie. No hay que parearlo a mano: `AsegurarServicioEnSegundoPlano()` lo hace
   en el primer arranque y PCL recuerda el pareo en esa máquina. Para comprobar
@@ -395,7 +397,7 @@ cola térmica reconocible. No se usa la impresora predeterminada.
 
 `CrearPaquete.ps1` (en `Host\Despliegue`, se queda en el repo y **no** viaja en
 el paquete) compila en Release y arma `dist\SmartOne.Perifericos.Host\` con los
-15 archivos que necesita una caja, más un ZIP hermano para copiar por red o
+16 archivos que necesita una caja, más un ZIP hermano para copiar por red o
 llevar en un pendrive.
 
 ```powershell
@@ -433,6 +435,7 @@ Get-ChildItem | Unblock-File                  # sólo si el ZIP vino de otra má
 .\Instalar.ps1 -EnvApi 'D:\api\.env'          # si el .env no está entre las carpetas vecinas
 .\Instalar.ps1 -SinTocarApi                   # API en otra máquina: genera y muestra el token
 .\Instalar.ps1 -Impresora 'EPSON TM-T20II Receipt'   # fijar la cola si no se autodetecta
+.\Instalar.ps1 -PrepararImpresora -Impresora 'EPSON TM-T20III'   # y crearla si falta (pide UAC)
 .\Instalar.ps1 -SinArrancar                   # revisar sin levantar el host
 .\Instalar.ps1 -Quitar                        # detener y desinstalar de esta caja
 ```
@@ -446,7 +449,10 @@ Hace cinco pasos y termina con un informe; devuelve `exit 1` si algo quedó en
 2. Periféricos: busca la cola térmica entre las instaladas con el mismo patrón
    de nombres que usa el módulo, y el pinpad por PnP (`VID_0B00`, Ingenico) o
    por la existencia de algún puerto serie. Aquí sólo avisa: si falta el
-   periférico, se instala después y no hay que repetir el paso.
+   periférico, se instala después y no hay que repetir el paso. Con
+   `-PrepararImpresora` y una cola que falta, en cambio, llama al asistente y
+   vuelve a leer la lista antes de informar; el `AVISO` de "no hay ninguna
+   impresora térmica" nombra al asistente, que también se puede ejecutar suelto.
 3. Impresora fijada con `-Impresora`: si el nombre no existe en esa máquina es
    `FALLO` y no se registra ni se arranca nada. Un nombre elegido a mano se
    toma como decisión deliberada, no como algo a adivinar.
@@ -466,3 +472,52 @@ misma máquina— no hay nada que pegar: el instalador adopta el token del `.env
 si la API todavía no tiene uno, lo escribe él mismo en los dos lados. Cuando no
 hay `.env` a la vista, el host arranca de una con el `token.txt` del paquete y el
 informe imprime ese valor para copiarlo en `PERIFERICOS_TOKEN` de la API.
+
+### Cola de impresión de la ticketera
+
+Conectar la ticketera por USB no siempre es suficiente. El caso que apareció en
+la primera caja real: Windows la publicaba dos veces en el Administrador de
+dispositivos (`EPSON TM-T20III`, como `SoftwareDevice` y como `USB`,
+`VID_04B8&PID_0E28`, sin ningún problema de estado), pero `Get-Printer` no
+devolvía ninguna cola suya y tampoco había driver de Epson instalado. El puerto
+físico estaba bien y aun así `/api/v1/impresion/estado` respondía
+`disponible:false`: el host no se equivocaba, le faltaba la cola.
+
+`PrepararImpresora.ps1` (en `Host\Despliegue`, viaja en el paquete) la crea con el
+driver de bandeja **Generic / Text Only** de Windows (`prnge001.inf`), que es el
+paso directo de ESC/POS crudo: no reinterpreta el trabajo, sólo lo entrega al
+puerto. Es el mismo criterio con el que imprime el módulo.
+
+```powershell
+.\PrepararImpresora.ps1                                  # 'EPSON TM-T20III' en el primer USB libre
+.\PrepararImpresora.ps1 -Nombre 'EPSON TM-T20III' -Puerto 'USB001'
+.\PrepararImpresora.ps1 -Forzar                          # la rehace aunque exista
+.\PrepararImpresora.ps1 -Quitar                          # la elimina; el driver queda
+```
+
+Decisiones que no son obvias:
+
+- **Pide UAC, y sólo cuando hay algo que hacer.** Crear una cola es una
+  operación de máquina. El script se vuelve a abrir elevado por su cuenta (mismo
+  `Start-Process -Verb RunAs` que usa `RegistrarArranqueAutomatico.ps1` con las
+  tareas) y, si al terminar resulta que la cola ya existía con el mismo driver,
+  no toca nada y sale con código 0. Por eso `Instalar.ps1` puede seguir siendo
+  no elevado: el UAC lo pide el asistente, y su `-PrepararImpresora` sólo lo
+  invoca cuando de verdad falta la cola.
+- **No cuenta su propio puerto como ocupado.** La primera versión elegía "el
+  primer USB libre" mirando todos los puertos en uso, así que en la segunda
+  corrida encontraba el `USB001` que ella misma había ocupado y se negaba con
+  "todos los puertos USB están ocupados". Ahora la comprobación previa va primero
+  y los puertos de las demás colas se cuentan sin contar la nuestra.
+- **No toca la impresora predeterminada.** Agregar una cola puede cambiarla. El
+  módulo nunca usa la predeterminada y no depende de ella, pero el script la
+  devuelve a la que estaba para no moverle la impresora a las otras
+  aplicaciones de la caja.
+- **Nada de esto ocurre en el arranque del host.** La cola se prepara una vez,
+  cuando la caja se instala. `ImpresionService` resuelve la impresora en cada
+  comprobante, leyendo las colas instaladas en ese instante, así que una cola
+  creada mientras el host corre ya se ve sin reiniciarlo.
+- **El nombre por defecto cumple el patrón que busca el módulo**
+  (`TM-T`, `TM-U`, `EPSON TM`, `RECEIPT`, `TICKET`, `THERMAL`, `POS-`, en ese
+  orden), así que no hace falta escribir `impresora_ticket` en el
+  `.exe.config` para que se encuentre sola.

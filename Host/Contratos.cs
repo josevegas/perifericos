@@ -66,19 +66,33 @@ namespace PuntoVenta.Perifericos.Host
         public string cliente_razon { get; set; }
         public decimal subtotal { get; set; }
         public decimal igv { get; set; }
+        public decimal igv_porcentaje { get; set; }
         public decimal total { get; set; }
         public decimal vuelto { get; set; }
         public string condicion_pago { get; set; }
+        public List<LineaRequest> lineas { get; set; }
+        /// <summary>Campo legado, aceptado si no se envía <c>lineas</c>.</summary>
         public LineaRequest linea { get; set; }
         public List<PagoRequest> pagos { get; set; }
 
-        /// <summary>Traduce al modelo de la librería. Devuelve <c>null</c> sin línea.</summary>
+        /// <summary>Traduce al modelo de impresión. Devuelve <c>null</c> sin detalle.</summary>
         public ComprobanteImpresion AModelo()
         {
-            if (linea == null || linea.EsVacia())
+            var detalle = new List<LineaComprobanteImpresion>();
+            if (lineas != null)
             {
-                return null;
+                foreach (LineaRequest item in lineas)
+                {
+                    if (item != null && !item.EsVacia())
+                    {
+                        detalle.Add(item.AModelo());
+                    }
+                }
             }
+
+            if (detalle.Count == 0 && linea != null && !linea.EsVacia())
+                detalle.Add(linea.AModelo());
+            if (detalle.Count == 0) return null;
 
             var modelo = new ComprobanteImpresion
             {
@@ -90,10 +104,12 @@ namespace PuntoVenta.Perifericos.Host
                 ClienteRazon = cliente_razon,
                 Subtotal = subtotal,
                 Igv = igv,
+                IgvPorcentaje = igv_porcentaje,
                 Total = total,
                 Vuelto = vuelto,
                 CondicionPago = condicion_pago,
-                Linea = linea.AModelo(),
+                Lineas = detalle,
+                Linea = detalle[0],
                 Pagos = new List<PagoComprobanteImpresion>(),
             };
 
@@ -112,10 +128,13 @@ namespace PuntoVenta.Perifericos.Host
         }
     }
 
-    /// <summary>Detalle de la venta: una sola línea, con placa, lado y manguera.</summary>
+    /// <summary>Detalle de la venta; los datos de despacho son opcionales.</summary>
     public sealed class LineaRequest
     {
         public string descripcion { get; set; }
+        public decimal? cantidad { get; set; }
+        public string unidad { get; set; }
+        /// <summary>Campo legado para el despacho en galones.</summary>
         public decimal galones { get; set; }
         public decimal precio { get; set; }
         public decimal total { get; set; }
@@ -139,6 +158,8 @@ namespace PuntoVenta.Perifericos.Host
             return new LineaComprobanteImpresion
             {
                 Descripcion = descripcion,
+                Cantidad = cantidad ?? galones,
+                Unidad = string.IsNullOrWhiteSpace(unidad) ? "GLL" : unidad,
                 Galones = galones,
                 Precio = precio,
                 Total = total,
