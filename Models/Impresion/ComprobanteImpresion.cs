@@ -17,6 +17,7 @@ namespace PuntoVenta.Models.Impresion
         public decimal Total { get; set; }
         public decimal Vuelto { get; set; }
         public string CondicionPago { get; set; }
+        public string MediosPago { get; set; }
         public List<LineaComprobanteImpresion> Lineas { get; set; }
         // Compatibilidad con comprobantes antiguos que solo traen una línea.
         public LineaComprobanteImpresion Linea { get; set; }

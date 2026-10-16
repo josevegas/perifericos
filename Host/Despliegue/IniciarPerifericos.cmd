@@ -40,6 +40,7 @@ if not errorlevel 1 goto :YaEnMarcha
 call :LeerToken
 if errorlevel 1 goto :SinToken
 
+call :LeerBridgeConfig
 call :Cabecera
 
 "%EXE%"
@@ -80,6 +81,12 @@ if exist "%~dp0token.txt" (
 )
 if not defined ORIGEN_TOKEN set "ORIGEN_TOKEN=variable de entorno PERIFERICOS_TOKEN"
 if not defined PERIFERICOS_TOKEN exit /b 1
+exit /b 0
+
+:LeerBridgeConfig
+if exist "%~dp0bridge-url.txt" set /p PERIFERICOS_BRIDGE_URL=<"%~dp0bridge-url.txt"
+if exist "%~dp0bridge-terminal.txt" set /p PERIFERICOS_BRIDGE_TERMINAL=<"%~dp0bridge-terminal.txt"
+if exist "%~dp0bridge-token.txt" set /p PERIFERICOS_BRIDGE_TOKEN=<"%~dp0bridge-token.txt"
 exit /b 0
 
 

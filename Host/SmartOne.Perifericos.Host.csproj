@@ -33,6 +33,7 @@
   <ItemGroup>
     <Reference Include="System" />
     <Reference Include="System.Core" />
+    <Reference Include="System.Net.WebSockets.Client" />
     <Reference Include="System.Web.Extensions" />
   </ItemGroup>
   <ItemGroup>
@@ -45,6 +46,7 @@
     <Compile Include="Contratos.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="PerifericosHttpHost.cs" />
+    <Compile Include="PinpadBridgeClient.cs" />
     <None Include="App.config" />
     <None Include="Despliegue\IniciarPerifericos.cmd">
       <Link>IniciarPerifericos.cmd</Link>

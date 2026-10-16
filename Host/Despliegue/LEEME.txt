@@ -9,6 +9,15 @@ QUÉ ES ESTO
   impresión de comprobantes. No abre nada hacia la red: no es un servicio
   expuesto, no necesita reglas de firewall ni permisos de administrador.
 
+AGENTE BRIDGE PARA API REMOTA
+  Si FastAPI está en un servidor remoto, la caja puede mantener un canal
+  WebSocket saliente cifrado (WSS). Así el servidor envía cobros, anulaciones y
+  pruebas de Pinpad sin abrir puertos entrantes ni publicar el HTTP local.
+  PostgreSQL del backend conserva la cola compartida entre sus workers.
+
+  El Bridge usa una credencial independiente por terminal. El token del Bridge
+  NO es el token.txt de HTTP local: no se reutiliza entre cajas.
+
 REQUISITOS DE LA CAJA
   - Windows de 64 bits (el ejecutable es x64).
   - .NET Framework 4.8. Viene de fábrica en Windows 10 1903 o superior.
@@ -62,6 +71,29 @@ INSTALACIÓN EN 3 PASOS
   automático, levanta el servicio y hace la prueba de humo. Al final imprime un
   informe con OK / AVISO / FALLO. Se puede volver a ejecutar las veces que haga
   falta: es idempotente.
+
+  Para activar el Bridge remoto, configure en el backend la migración, el
+  transporte `PERIFERICOS_PINPAD_TRANSPORTE=bridge` y una credencial única para
+  cada código de terminal en `PERIFERICOS_BRIDGE_TOKENS`. En la caja, cree estos
+  archivos junto a IniciarPerifericos.cmd antes de iniciar:
+
+    bridge-url.txt       wss://api.ejemplo.com/api/v1/perifericos/pinpad/bridge
+    bridge-terminal.txt El código de la caja, igual al del turno de POS
+    bridge-token.txt    El secreto único de esta caja, igual al del backend
+
+  bridge-token.txt es secreto local en texto plano para el proceso del agente:
+  limite su lectura al usuario de Windows que ejecuta la tarea y a los
+  administradores. No lo incluya en ZIP, repositorios, tickets ni logs. El
+  archivo está excluido de Git. Reinicie el host al cambiar la configuración.
+  El proxy de la API debe reenviar X-Forwarded-Proto y estar configurado como
+  proxy confiable para que el backend pueda verificar que la conexión usa TLS.
+  Solo se necesita salida HTTPS/WSS hacia el servidor; no se abre el puerto
+  5005 a la red.
+
+  En Bridge, los cobros, anulaciones y pruebas deben llevar el mismo
+  codigo_terminal configurado en la caja y un turno abierto a nombre del usuario
+  autenticado. Si la conexión se pierde después de enviar un cobro, el servidor
+  no vuelve a enviarlo automáticamente: revise el voucher antes de reintentar.
 
 QUÉ HACE EL INSTALADOR
   1. Comprueba Windows x64 y .NET Framework 4.8.                    (bloqueante)

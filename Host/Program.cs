@@ -72,6 +72,12 @@ namespace PuntoVenta.Perifericos.Host
                     Console.Error.WriteLine("El canal PCL no está listo; revise pinpad.log.");
 
                 var host = new PerifericosHttpHost(token);
+                PinpadBridgeClient bridge = PinpadBridgeClient.DesdeEntorno(host);
+                if (bridge != null)
+                {
+                    Console.WriteLine("Iniciando conexión saliente segura del agente Bridge...");
+                    Task.Run(() => bridge.EjecutarAsync(CancellationToken.None));
+                }
                 Console.WriteLine("Servicio de periféricos escuchando en http://127.0.0.1:5005/");
                 host.EjecutarAsync().GetAwaiter().GetResult();
             }

@@ -4,6 +4,7 @@ using PuntoVenta.Models.Pinpad;
 using PuntoVenta.Services;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Text;
@@ -264,6 +265,80 @@ namespace PuntoVenta.Perifericos.Host
         private async Task<CobroTarjetaResultado> EjecutarAnulacionAsync(string referencia)
         {
             return await _pinpad.AnularAsync(referencia).ConfigureAwait(false);
+        }
+
+        internal async Task<Dictionary<string, object>> EjecutarOrdenBridgeAsync(
+            Dictionary<string, object> orden)
+        {
+            object idValor;
+            object operacionValor;
+            if (!orden.TryGetValue("id", out idValor) ||
+                !orden.TryGetValue("operacion", out operacionValor) ||
+                !Guid.TryParse(Convert.ToString(idValor, CultureInfo.InvariantCulture), out Guid clave) ||
+                clave == Guid.Empty)
+            {
+                throw new InvalidOperationException("La orden del servidor no tiene un id válido.");
+            }
+
+            string operacion = Convert.ToString(operacionValor, CultureInfo.InvariantCulture);
+            CobroTarjetaResultado resultado;
+            switch (operacion)
+            {
+                case "cobrar":
+                    object montoValor;
+                    decimal monto;
+                    if (!orden.TryGetValue("monto", out montoValor) ||
+                        !decimal.TryParse(
+                            Convert.ToString(montoValor, CultureInfo.InvariantCulture),
+                            NumberStyles.Number,
+                            CultureInfo.InvariantCulture,
+                            out monto) ||
+                        monto <= 0)
+                    {
+                        throw new InvalidOperationException("La orden de cobro tiene un monto inválido.");
+                    }
+
+                    CobroEnCache cobro = ObtenerOCrearCobro(clave, monto);
+                    if (cobro.Monto != monto)
+                        throw new InvalidOperationException(
+                            "La clave de idempotencia ya se usó con otro monto.");
+                    resultado = await cobro.Resultado.ConfigureAwait(false);
+                    return ConvertirResultado(resultado);
+
+                case "anular":
+                    object referenciaValor;
+                    if (!orden.TryGetValue("referencia", out referenciaValor))
+                        throw new InvalidOperationException(
+                            "La orden de anulación no tiene referencia.");
+                    string referencia = Convert.ToString(
+                        referenciaValor, CultureInfo.InvariantCulture).Trim();
+                    if (referencia.Length == 0 || referencia.Length > 32)
+                        throw new InvalidOperationException(
+                            "La referencia de anulación es inválida.");
+
+                    AnulacionEnCache anulacion = ObtenerOCrearAnulacion(clave, referencia);
+                    if (!string.Equals(
+                        anulacion.Referencia, referencia, StringComparison.Ordinal))
+                    {
+                        throw new InvalidOperationException(
+                            "La clave de idempotencia ya se usó con otra referencia.");
+                    }
+                    resultado = await anulacion.Resultado.ConfigureAwait(false);
+                    return ConvertirResultado(resultado);
+
+                case "probar":
+                    resultado = await _pinpad.ProbarEcoAsync().ConfigureAwait(false);
+                    bool respuestaRecibida = !string.IsNullOrEmpty(resultado.RespuestaCruda);
+                    return new Dictionary<string, object>
+                    {
+                        { "comunicacion_ok", resultado.Aprobado && respuestaRecibida },
+                        { "respuesta_recibida", respuestaRecibida },
+                        { "mensaje_error", resultado.MensajeError },
+                    };
+
+                default:
+                    throw new InvalidOperationException("La operación del Pinpad no está permitida.");
+            }
         }
 
         // ----------------------------------------------------------- anulación

@@ -70,6 +70,7 @@ namespace PuntoVenta.Perifericos.Host
         public decimal total { get; set; }
         public decimal vuelto { get; set; }
         public string condicion_pago { get; set; }
+        public string medios_pago { get; set; }
         public List<LineaRequest> lineas { get; set; }
         /// <summary>Campo legado, aceptado si no se envía <c>lineas</c>.</summary>
         public LineaRequest linea { get; set; }
@@ -108,6 +109,7 @@ namespace PuntoVenta.Perifericos.Host
                 Total = total,
                 Vuelto = vuelto,
                 CondicionPago = condicion_pago,
+                MediosPago = medios_pago,
                 Lineas = detalle,
                 Linea = detalle[0],
                 Pagos = new List<PagoComprobanteImpresion>(),
@@ -224,10 +226,12 @@ namespace PuntoVenta.Perifericos.Host
         public string cajero { get; set; }
         public int? turno_numero { get; set; }
         public string nro_serie_maquina { get; set; }
+        public string codigo_terminal { get; set; }
 
         public ContextoImpresion AModelo()
         {
-            return new ContextoImpresion(cajero, turno_numero, nro_serie_maquina);
+            return new ContextoImpresion(
+                cajero, turno_numero, nro_serie_maquina, codigo_terminal);
         }
     }
 }

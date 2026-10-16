@@ -24,6 +24,7 @@ pinpad.log
 # Token de servicio y salida del lanzador (los escribe IniciarPerifericos.cmd)
 token.txt
 host.log
+bridge-token.txt
 
 # Paquetes de despliegue armados por Host\Despliegue\CrearPaquete.ps1
 dist/

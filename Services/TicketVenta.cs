@@ -21,12 +21,18 @@ namespace PuntoVenta.Services
 
         /// <summary>"M. REG." del comprobante impreso — ver <c>ConfiguracionTerminal.NroSerieMaquina</c>.</summary>
         public string NroSerieMaquina { get; }
+        public string CodigoTerminal { get; }
 
-        public ContextoImpresion(string cajero, int? turnoNumero, string nroSerieMaquina)
+        public ContextoImpresion(
+            string cajero,
+            int? turnoNumero,
+            string nroSerieMaquina,
+            string codigoTerminal = null)
         {
             Cajero = cajero;
             TurnoNumero = turnoNumero;
             NroSerieMaquina = nroSerieMaquina;
+            CodigoTerminal = codigoTerminal;
         }
     }
 
@@ -117,7 +123,7 @@ namespace PuntoVenta.Services
 
             // Doble ancho: cada carácter ocupa 2, así que el límite es la
             // mitad de las columnas normales.
-            t.Append(EscPos.Grande).Append(Recortar(titulo, EscPos.Columnas / 2)).Append('\n')
+            t.Append(EscPos.Grande).Append(Recortar(titulo, EscPos.Columnas / 1)).Append('\n')
              .Append(EscPos.Normal);
 
             if (!string.IsNullOrWhiteSpace(emisor.NombreComercial))
@@ -248,12 +254,13 @@ namespace PuntoVenta.Services
              .Append(EscPos.NegritaOff);
         }
 
-        /// <summary>"Forma pago: CONTADO". La CONDICIÓN comercial de la venta,
-        /// no el instrumento con el que se cobró —eso va en <see cref="Pagos"/>—.</summary>
+        /// <summary>La condición comercial y los medios efectivamente usados.</summary>
         private static void FormaDePago(StringBuilder t, ComprobanteImpresion venta)
         {
-            if (string.IsNullOrWhiteSpace(venta.CondicionPago)) return;
-            t.Append(EscPos.Fila("Forma pago", venta.CondicionPago.Trim())).Append('\n');
+            if (!string.IsNullOrWhiteSpace(venta.CondicionPago))
+                t.Append(EscPos.Fila("Forma pago", venta.CondicionPago.Trim())).Append('\n');
+            if (!string.IsNullOrWhiteSpace(venta.MediosPago))
+                Lineas(t, "Medios de pago: " + venta.MediosPago.Trim());
         }
 
         private static void Pagos(StringBuilder t, ComprobanteImpresion venta)
@@ -332,6 +339,8 @@ namespace PuntoVenta.Services
                 t.Append("Cajero: ").Append(Recortar(contexto.Cajero, 32)).Append('\n');
             if (contexto.TurnoNumero != null)
                 t.Append("Turno: ").Append(contexto.TurnoNumero.Value.ToString(Peru)).Append('\n');
+            if (!string.IsNullOrWhiteSpace(contexto.CodigoTerminal))
+                t.Append("Caja: ").Append(Recortar(contexto.CodigoTerminal, 32)).Append('\n');
 
             // La hora de IMPRESIÓN, no la de emisión: en una reimpresión son
             // distintas, y saber cuándo salió cada papel resuelve discusiones.
