@@ -12,6 +12,13 @@
 
     Al terminar deja también un .zip listo para copiar en una memoria USB.
 
+    El armado no destruye la configuración propia de la caja: si la carpeta
+    destino ya existe --por ejemplo dist\, que es la que usa la tarea
+    programada-- se conservan los bridge-url.txt, bridge-terminal.txt,
+    bridge-token.txt y bridge-insecure.txt junto con host.log y pinpad.log.
+    Esos archivos tampoco viajan en el .zip, de modo que el secreto del agente
+    no se va en la memoria USB.
+
 .PARAMETER Destino
     Carpeta donde se arma el paquete. Por defecto, dist\ en la raíz del repo.
 
@@ -157,23 +164,76 @@ if ($faltantes.Count -gt 0) {
     throw ('Faltan archivos por copiar: ' + ($faltantes -join ', '))
 }
 
+# Lo que pertenece a la caja y no al paquete: la identidad del agente bridge y
+# las bitácoras. Se guardan en memoria y se devuelven después de vaciar, porque
+# vaciar dist\ dejaría a la instalación viva sin URL, sin terminal y sin token.
+$archivosCaja = @(
+    'bridge-url.txt',
+    'bridge-terminal.txt',
+    'bridge-token.txt',
+    'bridge-insecure.txt',
+    'host.log',
+    'pinpad.log'
+)
+$conservados = @{}
+
 if (Test-Path -LiteralPath $raizPaquete) {
-    Remove-Item -LiteralPath $raizPaquete -Recurse -Force
+    foreach ($nombre in $archivosCaja) {
+        $rutaPrevia = Join-Path $raizPaquete $nombre
+        if (Test-Path -LiteralPath $rutaPrevia) {
+            $conservados[$nombre] = [System.IO.File]::ReadAllBytes($rutaPrevia)
+        }
+    }
+    try {
+        Remove-Item -LiteralPath $raizPaquete -Recurse -Force -ErrorAction Stop
+    }
+    catch {
+        # Una consola o el Explorador abiertos en la carpeta dejan tomado el
+        # directorio y no se puede borrar. Se vacía su contenido y se sigue
+        # trabajando sobre la misma carpeta en vez de abortar a mitad.
+        Write-Host ''
+        Write-Host '  La carpeta destino está abierta en otro proceso: se vacía sin borrarla.' -ForegroundColor Yellow
+        try {
+            Get-ChildItem -LiteralPath $raizPaquete -Force | Remove-Item -Recurse -Force
+        }
+        catch {
+            # Un binario tomado (el host en ejecución) deja la carpeta a medias.
+            # Se devuelve la identidad de la caja antes de abortar para que la
+            # instalación viva no quede sin URL, sin terminal y sin token.
+            foreach ($nombre in $conservados.Keys) {
+                [System.IO.File]::WriteAllBytes((Join-Path $raizPaquete $nombre), $conservados[$nombre])
+            }
+            throw ('No se pudo vaciar la carpeta destino; detenga el host y reintente. ' + $_)
+        }
+    }
 }
 New-Item -ItemType Directory -Path $raizPaquete -Force | Out-Null
 
+# $archivosPaquete es el manifiesto exacto del paquete y lo único que se
+# comprime: nada que esté en la carpeta por otras razones entra al .zip.
+$archivosPaquete = New-Object 'System.Collections.Generic.List[string]'
+
 foreach ($nombre in $desdeSalida) {
-    Copy-Item -LiteralPath (Join-Path $salida $nombre) -Destination (Join-Path $raizPaquete $nombre)
+    $copia = Join-Path $raizPaquete $nombre
+    Copy-Item -LiteralPath (Join-Path $salida $nombre) -Destination $copia
+    $archivosPaquete.Add($copia)
 }
 
 foreach ($nombre in $desdeDespliegue) {
-    Copy-Item -LiteralPath (Join-Path $despliegue $nombre) -Destination (Join-Path $raizPaquete $nombre)
+    $copia = Join-Path $raizPaquete $nombre
+    Copy-Item -LiteralPath (Join-Path $despliegue $nombre) -Destination $copia
+    $archivosPaquete.Add($copia)
 }
 
 # El .exe.config se regenera desde App.config: así el paquete sale siempre con
 # impresora_ticket vacío, sin la impresora de la máquina donde se compiló.
-Copy-Item -LiteralPath (Join-Path $hostDir 'App.config') `
-    -Destination (Join-Path $raizPaquete ($nombrePaquete + '.exe.config'))
+$configPaquete = Join-Path $raizPaquete ($nombrePaquete + '.exe.config')
+Copy-Item -LiteralPath (Join-Path $hostDir 'App.config') -Destination $configPaquete
+$archivosPaquete.Add($configPaquete)
+
+foreach ($nombre in $conservados.Keys) {
+    [System.IO.File]::WriteAllBytes((Join-Path $raizPaquete $nombre), $conservados[$nombre])
+}
 
 # ------------------------------------------------------------------ token -----
 # El paquete viaja con token.txt ya escrito: en una caja sin .env a la vista el
@@ -203,9 +263,11 @@ if (-not $SinToken) {
 
     # Sin BOM y con un solo salto de línea: IniciarPerifericos.cmd lo lee con
     # "set /p", que arrastraría el BOM dentro del token.
-    [System.IO.File]::WriteAllText((Join-Path $raizPaquete 'token.txt'),
+    $tokenPaqueteRuta = Join-Path $raizPaquete 'token.txt'
+    [System.IO.File]::WriteAllText($tokenPaqueteRuta,
         $tokenPaquete + [Environment]::NewLine,
         (New-Object System.Text.UTF8Encoding($false)))
+    $archivosPaquete.Add($tokenPaqueteRuta)
 }
 
 # ------------------------------------------------------------------ version ---
@@ -231,8 +293,10 @@ $version = @(
     ('Máquina   : ' + $env:COMPUTERNAME)
     ('Compilado : ' + $(if ($SinCompilar) { 'no (se reutilizó bin\Release)' } else { 'sí, Release' }))
     ('Token     : ' + $(if ($tokenPaquete) { 'token.txt incluido' } else { 'sin token.txt' }))
+    ('Bridge    : ' + $(if ($conservados.Count -gt 0) { 'config de la caja conservada, fuera del ZIP' } else { 'sin archivos de caja previos' }))
 )
 $version | Set-Content -LiteralPath (Join-Path $raizPaquete 'version.txt') -Encoding UTF8
+$archivosPaquete.Add((Join-Path $raizPaquete 'version.txt'))
 
 # ---------------------------------------------------------------- resumen -----
 Write-Host ''
@@ -245,6 +309,14 @@ foreach ($item in $items) {
     Write-Host ('   {0,-40} {1,10:N0} B' -f $item.Name, $item.Length) -ForegroundColor Gray
 }
 Write-Host ('   {0,-40} {1,10:N0} B' -f ($items.Count.ToString() + ' archivos'), $total) -ForegroundColor White
+
+if ($conservados.Count -gt 0) {
+    Write-Host ''
+    Write-Host '  Conservado de la caja (no va en el ZIP):' -ForegroundColor Cyan
+    foreach ($nombre in ($conservados.Keys | Sort-Object)) {
+        Write-Host ('   ' + $nombre) -ForegroundColor Gray
+    }
+}
 
 if ($tokenPaquete) {
     Write-Host ''
@@ -260,7 +332,25 @@ if (-not $SinZip) {
     $zip = Join-Path $Destino ($nombrePaquete + '-' + $sello + '.zip')
 
     if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
-    Compress-Archive -Path $raizPaquete -DestinationPath $zip -CompressionLevel Optimal
+
+    # Se comprime el manifiesto, no la carpeta: así el ZIP no arrastra la
+    # configuración de esta caja (bridge-token.txt sobre todo) ni bitácoras.
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archivoZip = [System.IO.Compression.ZipFile]::Open(
+        $zip, [System.IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($ruta in $archivosPaquete) {
+            $entrada = $nombrePaquete + '/' + (Split-Path -Path $ruta -Leaf)
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                $archivoZip, $ruta, $entrada,
+                [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null
+        }
+    }
+    finally {
+        $archivoZip.Dispose()
+    }
+
     $zip = (Get-Item -LiteralPath $zip).FullName
 
     Write-Host ''

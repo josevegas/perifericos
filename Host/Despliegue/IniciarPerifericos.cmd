@@ -87,6 +87,7 @@ exit /b 0
 if exist "%~dp0bridge-url.txt" set /p PERIFERICOS_BRIDGE_URL=<"%~dp0bridge-url.txt"
 if exist "%~dp0bridge-terminal.txt" set /p PERIFERICOS_BRIDGE_TERMINAL=<"%~dp0bridge-terminal.txt"
 if exist "%~dp0bridge-token.txt" set /p PERIFERICOS_BRIDGE_TOKEN=<"%~dp0bridge-token.txt"
+if exist "%~dp0bridge-insecure.txt" set /p PERIFERICOS_BRIDGE_INSEGURO=<"%~dp0bridge-insecure.txt"
 exit /b 0
 
 
@@ -98,6 +99,7 @@ echo  ============================================================
 echo   Carpeta : %~dp0
 echo   Token   : %ORIGEN_TOKEN%
 echo   Inicio  : %DATE% %TIME%
+if "%PERIFERICOS_BRIDGE_INSEGURO%"=="1" echo   Aviso   : Bridge sin TLS ^(modo inseguro^).
 echo.
 echo   Arrancando SmartOne.Perifericos.Host.exe ...
 echo   Para detenerlo: Ctrl+C en esta ventana.

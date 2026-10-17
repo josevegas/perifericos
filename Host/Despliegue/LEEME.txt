@@ -81,6 +81,40 @@ INSTALACIÓN EN 3 PASOS
     bridge-terminal.txt El código de la caja, igual al del turno de POS
     bridge-token.txt    El secreto único de esta caja, igual al del backend
 
+  bridge-url.txt acepta dos transportes y se elige por el esquema de la URL:
+
+    ws://, wss://     Canal WebSocket: un solo socket abierto. Es el preferido,
+                      pero exige que el proxy reenvíe el upgrade (en nginx,
+                      proxy_set_header Upgrade y Connection "upgrade"). El
+                      backend no tiene bandera de excepción para este canal:
+                      ws:// remoto se cierra con el código 4403, así que un
+                      servidor publicado solo en http:// necesita el
+                      transporte de larga encuesta.
+    http://, https:// HTTP de larga encuesta: la caja deja una petición abierta
+                      contra …/perifericos/pinpad/agente y el servidor responde
+                      en cuanto hay una orden o al vencer el plazo. Atraviesa
+                      proxies que solo reenvían HTTP normal, sin tocar el
+                      upgrade. La ruta de la sesión se deriva de la misma URL,
+                      así que …/pinpad/bridge pasa a ser …/pinpad/agente.
+
+  Por omisión el agente exige wss:// o https:// fuera de loopback y valida el
+  certificado del servidor. Si el backend todavía no tiene TLS (por ejemplo,
+  publicado en http:// con IP y puerto directos), cree además:
+
+    bridge-insecure.txt  1
+
+  Esa bandera habilita ws:// y http:// sin cifrar hacia un equipo remoto y
+  desactiva la validación del certificado (necesario mientras el certificado
+  sea autofirmado o esté vencido). Con ella el token de la caja viaja en texto
+  plano por la red y la conexión queda expuesta a intercepción: úsela solo en
+  pruebas o en una red controlada, y retírela en cuanto el backend tenga un
+  certificado válido con SAN para el nombre o IP que figura en bridge-url.txt.
+  Al arrancar, el host imprime un AVISO en consola cuando este modo está activo.
+
+  Con http:// remoto el backend responde 403 a propósito, porque el token
+  viajaría sin cifrar. Para aceptarlo, además, el servidor debe definir
+  PERIFERICOS_BRIDGE_HTTP_INSEGURO=true en su .env.
+
   bridge-token.txt es secreto local en texto plano para el proceso del agente:
   limite su lectura al usuario de Windows que ejecuta la tarea y a los
   administradores. No lo incluya en ZIP, repositorios, tickets ni logs. El
@@ -89,6 +123,12 @@ INSTALACIÓN EN 3 PASOS
   proxy confiable para que el backend pueda verificar que la conexión usa TLS.
   Solo se necesita salida HTTPS/WSS hacia el servidor; no se abre el puerto
   5005 a la red.
+
+  Antes de culpar al agente, confirme que el puerto del backend sea alcanzable
+  desde la caja:  Test-NetConnection <ip> -Port <puerto>  debe dar True. Si el
+  firewall del servidor descarta el puerto, el host reintenta con espera
+  creciente y la consola muestra "Bridge desconectado ... no ha podido
+  responder": eso es red, no configuración.
 
   En Bridge, los cobros, anulaciones y pruebas deben llevar el mismo
   codigo_terminal configurado en la caja y un turno abierto a nombre del usuario
@@ -285,6 +325,13 @@ ARCHIVOS DEL PAQUETE
 
   CrearPaquete.ps1 no viene en el paquete: se ejecuta en la máquina de
   desarrollo para volver a armarlo.
+
+  Al volver a armarlo sobre una carpeta que ya es una instalación --dist\ es la
+  que usa la tarea programada de esta PC--, CrearPaquete.ps1 conserva
+  bridge-url.txt, bridge-terminal.txt, bridge-token.txt, host.log y pinpad.log.
+  Esos archivos no viajan en el ZIP: el ZIP lleva solo el manifiesto del
+  paquete, sin secretos ni bitácoras. Para una caja nueva, copie aparte los tres
+  bridge-*.txt o vuelva a ejecutar Instalar.ps1 en esa caja.
 
   Las versiones de las DLL nativas son fijas: son las que entrega Ingenico y no
   se reemplazan por otras.

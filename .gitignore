@@ -25,6 +25,10 @@ pinpad.log
 token.txt
 host.log
 bridge-token.txt
+# Configuración propia de cada caja: no debe heredarse entre instalaciones
+bridge-url.txt
+bridge-terminal.txt
+bridge-insecure.txt
 
 # Paquetes de despliegue armados por Host\Despliegue\CrearPaquete.ps1
 dist/
