@@ -50,9 +50,10 @@
     mano.
 
 .PARAMETER Impresora
-    Nombre exacto de la cola de la impresora térmica, tal como aparece en
+    Nombre exacto de una cola YA instalada, tal como aparece en
     "Impresoras y escáneres". Se escribe en impresora_ticket del .exe.config.
-    Si se omite, el módulo busca una cola térmica por el nombre.
+    Si se omite, el módulo busca una cola térmica por el nombre, que es lo
+    recomendado: así la caja funciona aunque cambie el modelo de ticketera.
 
 .PARAMETER PrepararImpresora
     Si la caja todavía no tiene la cola de la ticketera, la crea llamando a
@@ -81,7 +82,8 @@
     .\Instalar.ps1 -Token 'p0s_Caja3_2026_ClaveServicioLocal'
 
 .EXAMPLE
-    .\Instalar.ps1 -TokenAuto -Impresora 'EPSON TM-T20II Receipt'
+    .\Instalar.ps1 -TokenAuto -Impresora 'EPSON TM-T20III'
+    Con un token nuevo y fijando la cola de la ticketera.
 
 .EXAMPLE
     .\Instalar.ps1 -PrepararImpresora -Impresora 'EPSON TM-T20III'
@@ -414,6 +416,11 @@ else {
 if (-not $hayTermica -and $PrepararImpresora) {
     Titulo 'Creando la cola de la ticketera'
 
+    $yaTermicas = @($colas | Where-Object { $_ -match $patronTermica })
+    if ($yaTermicas.Count -gt 0) {
+        Anota 'AVISO' ("Ya hay una térmica instalada (" + ($yaTermicas -join ', ') + "). Si '" + $Impresora + "' no es otra ticketera distinta, cancele el aviso de Windows y repita sin -Impresora, o con el nombre correcto: crearla dejaría dos colas y el módulo no sabría cuál usar.")
+    }
+
     if (-not (Test-Path -LiteralPath $preparador)) {
         Anota 'AVISO' 'No está PrepararImpresora.ps1 en la carpeta del paquete: la cola hay que crearla a mano.'
     }
@@ -448,7 +455,19 @@ if ($Impresora) {
         Anota 'OK' ("La cola '" + $Impresora + "' está instalada.")
     }
     else {
-        Anota 'FALLO' ("No hay ninguna cola llamada '" + $Impresora + "'. Instaladas: " + ($colas -join ', ') + '. Use -PrepararImpresora para crearla.')
+        # Equivocar el nombre es el error más común: la máquina trae la térmica
+        # como 'EPSON TM-T20III' y se teclea el modelo de otra caja. Si la buena
+        # ya está instalada, conviene decirlo antes que mandar a crear otra.
+        $termicas = @($colas | Where-Object { $_ -match $patronTermica })
+        if ($termicas.Count -eq 1) {
+            Anota 'FALLO' ("No hay ninguna cola llamada '" + $Impresora + "', pero la ticketera ya está instalada como '" + $termicas[0] + "'. Repita el instalador sin -Impresora (se detecta sola) o con -Impresora '" + $termicas[0] + "'. No agregue -PrepararImpresora: crearía una cola duplicada.")
+        }
+        elseif ($termicas.Count -gt 1) {
+            Anota 'FALLO' ("No hay ninguna cola llamada '" + $Impresora + "'. Las colas que parecen térmicas son: " + ($termicas -join ', ') + ". Elija una con -Impresora '<nombre exacto>'.")
+        }
+        else {
+            Anota 'FALLO' ("No hay ninguna cola llamada '" + $Impresora + "'. Instaladas: " + ($colas -join ', ') + '. Use -PrepararImpresora para crearla.')
+        }
     }
 }
 else {

@@ -268,7 +268,7 @@ La respuesta es `200`:
 {
   "impreso": true,
   "ya_impreso": false,
-  "impresora": "EPSON TM-T20II Receipt",
+  "impresora": "EPSON TM-T20III",
   "serie_numero": "B001-00012345",
   "copia": false
 }
@@ -292,7 +292,7 @@ Reglas de repetición:
 #### Abrir gaveta
 
 `POST /api/v1/impresion/gaveta` recibe un cuerpo vacío y responde `200`
-`{"abierta": true, "impresora": "EPSON TM-T20II Receipt"}`. No usa clave de
+`{"abierta": true, "impresora": "EPSON TM-T20III"}`. No usa clave de
 idempotencia: abrir dos veces la misma gaveta no deja nada a medias, y el
 backend a veces sólo quiere el cajón (dar cambio, guardar un depósito) sin
 venta de por medio.
@@ -321,7 +321,7 @@ El host resuelve la impresora en cada petición (nunca la guarda en caché). Lee
 edita ese `.exe.config`:
 
 ```xml
-<add key="impresora_ticket" value="EPSON TM-T20II Receipt" />
+<add key="impresora_ticket" value="EPSON TM-T20III" />
 ```
 
 Si se deja vacío, se busca una cola térmica reconocible por el nombre (`TM-T`,
@@ -354,7 +354,7 @@ contexto operativo; no depende de una sesión ni de los modelos de venta del POS
 using PuntoVenta.Models.Impresion;
 using PuntoVenta.Services;
 
-var impresora = new ImpresionService("EPSON TM-T20II Receipt");
+var impresora = new ImpresionService("EPSON TM-T20III");
 impresora.Imprimir(venta, emisor,
     new ContextoImpresion(nombreCajero, numeroTurno, serieMaquina));
 ```
@@ -434,7 +434,7 @@ Get-ChildItem | Unblock-File                  # sólo si el ZIP vino de otra má
 .\Instalar.ps1 -TokenAuto                     # rotar el secreto en los dos lados
 .\Instalar.ps1 -EnvApi 'D:\api\.env'          # si el .env no está entre las carpetas vecinas
 .\Instalar.ps1 -SinTocarApi                   # API en otra máquina: genera y muestra el token
-.\Instalar.ps1 -Impresora 'EPSON TM-T20II Receipt'   # fijar la cola si no se autodetecta
+.\Instalar.ps1 -Impresora 'EPSON TM-T20III'   # fijar la cola (debe existir ya) si no se autodetecta
 .\Instalar.ps1 -PrepararImpresora -Impresora 'EPSON TM-T20III'   # y crearla si falta (pide UAC)
 .\Instalar.ps1 -SinArrancar                   # revisar sin levantar el host
 .\Instalar.ps1 -Quitar                        # detener y desinstalar de esta caja

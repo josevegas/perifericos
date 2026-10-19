@@ -56,7 +56,11 @@ INSTALACIÓN EN 3 PASOS
 
      Puede fijar la impresora a mano, si hay más de una:
 
-        powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -Impresora "EPSON TM-T20II Receipt"
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\Instalar.ps1 -Impresora "EPSON TM-T20III"
+
+     El nombre tiene que ser el exacto de una cola ya instalada; se ve con
+     Get-Printer. Si se equivoca, el instalador ahora dice cuál es la térmica
+     que sí está instalada en vez de mandarlo a crear una cola duplicada.
 
      Y si la caja todavía no tiene la cola de la ticketera, el instalador la
      puede crear en la misma pasada (pide permisos de administrador):
