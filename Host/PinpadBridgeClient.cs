@@ -318,6 +318,30 @@ namespace PuntoVenta.Perifericos.Host
             return orden;
         }
 
+        private static string MensajeDeFallo(
+            Dictionary<string, object> orden, Exception ex)
+        {
+            // El pinpad se resume: sus errores traen códigos del equipo que no le
+            // dicen nada al cajero, y el backend ya los guarda en su log. La
+            // impresora, en cambio, falla por cosas que él mismo puede
+            // arreglar —sin papel, sin cable, sin driver— y ahí el mensaje ES la
+            // instrucción: ocultarlo convierte un problema de dos minutos en una
+            // llamada al soporte.
+            object operacionValor;
+            string operacion = orden.TryGetValue("operacion", out operacionValor)
+                ? Convert.ToString(operacionValor, CultureInfo.InvariantCulture)
+                : null;
+
+            if ((string.Equals(operacion, "imprimir", StringComparison.Ordinal) ||
+                 string.Equals(operacion, "estado_impresora", StringComparison.Ordinal)) &&
+                !string.IsNullOrWhiteSpace(ex.Message))
+            {
+                return ex.Message;
+            }
+
+            return "No se pudo completar la operación en el Pinpad.";
+        }
+
         private async Task EjecutarYResponderAsync(
             string conexionId, Dictionary<string, object> orden, CancellationToken cancelar)
         {
@@ -340,7 +364,7 @@ namespace PuntoVenta.Perifericos.Host
                 {
                     Console.Error.WriteLine(
                         "No se pudo completar la orden Bridge " + id + ": " + ex);
-                    error = "No se pudo completar la operación en el Pinpad.";
+                    error = MensajeDeFallo(orden, ex);
                 }
                 finally
                 {
@@ -528,7 +552,7 @@ namespace PuntoVenta.Perifericos.Host
                 {
                     Console.Error.WriteLine(
                         "No se pudo completar la orden Bridge " + id + ": " + ex);
-                    respuesta.Add("error", "No se pudo completar la operación en el Pinpad.");
+                    respuesta.Add("error", MensajeDeFallo(orden, ex));
                 }
 
                 await EnviarMensajeAsync(socket, respuesta, cancelar).ConfigureAwait(false);

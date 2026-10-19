@@ -336,8 +336,88 @@ namespace PuntoVenta.Perifericos.Host
                         { "mensaje_error", resultado.MensajeError },
                     };
 
+                case "imprimir":
+                    return await ImprimirDesdeBridgeAsync(clave, orden).ConfigureAwait(false);
+
+                case "estado_impresora":
+                    return DiagnosticoDeImpresora();
+
                 default:
                     throw new InvalidOperationException("La operación del Pinpad no está permitida.");
+            }
+        }
+
+        /// <summary>
+        /// Imprime el comprobante que llegó como orden del agente remoto.
+        ///
+        /// El servidor ya no comparte máquina con la térmica, así que el ticket
+        /// tiene que viajar: cuando el backend corre remoto, su
+        /// <c>127.0.0.1:5005</c> es su propia máquina y no la caja. La orden
+        /// trae el mismo JSON que el endpoint local —se aplana sobre la orden,
+        /// con <c>id</c> y <c>operacion</c> al lado—, así que se rearma con el
+        /// mismo contrato y pasa por la misma validación y la misma caché de
+        /// idempotencia. Reimprimir dos veces por un reintento es tan caro como
+        /// cobrar dos veces.
+        /// </summary>
+        private async Task<Dictionary<string, object>> ImprimirDesdeBridgeAsync(
+            Guid clave, Dictionary<string, object> orden)
+        {
+            ImpresionComprobanteRequest solicitud = LeerSolicitudDeImpresion(orden);
+            string problema = ValidarSolicitudDeImpresion(solicitud);
+            if (problema != null)
+                throw new InvalidOperationException(problema);
+
+            ComprobanteImpresion venta = solicitud.venta.AModelo();
+            ImpresionEnCache impresion;
+            bool impresoAhora = false;
+
+            if (!BuscarImpresion(clave, out impresion))
+            {
+                // Igual que en el camino HTTP: la impresora se resuelve ANTES de
+                // memorizar la clave, para que un fallo no la deje envenenada.
+                string impresora = ImpresionService.Impresora();
+                impresion = ObtenerOCrearImpresion(
+                    clave, impresora, venta, solicitud.emisor.AModelo(),
+                    solicitud.contexto.AModelo(), solicitud.copia, out impresoAhora);
+            }
+
+            if (!impresion.Coincide(venta, solicitud.copia))
+            {
+                throw new InvalidOperationException(
+                    "La clave de idempotencia ya se utilizó para otro comprobante.");
+            }
+
+            ResultadoImpresion resultado =
+                await EsperarImpresionAsync(clave, impresion).ConfigureAwait(false);
+            return RespuestaDeImpresion(impresion, resultado, impresoAhora);
+        }
+
+        /// <summary>
+        /// Rearma el comprobante desde la orden del agente.
+        ///
+        /// La orden llega como diccionario —el JSON ya deserializado— con el
+        /// comprobante aplanado al mismo nivel que <c>id</c> y <c>operacion</c>.
+        /// Se vuelve a serializar para deserializarla con el contrato de
+        /// siempre, en vez de traducir campo por campo a mano: son más de veinte
+        /// campos y cada uno que se olvide es un ticket que sale en blanco.
+        /// </summary>
+        private static ImpresionComprobanteRequest LeerSolicitudDeImpresion(
+            Dictionary<string, object> orden)
+        {
+            string json = new JavaScriptSerializer().Serialize(orden);
+            try
+            {
+                return new JavaScriptSerializer().Deserialize<ImpresionComprobanteRequest>(json);
+            }
+            catch (ArgumentException ex)
+            {
+                throw new InvalidOperationException(
+                    "La orden de impresión no trae un comprobante válido.", ex);
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new InvalidOperationException(
+                    "La orden de impresión no trae un comprobante válido.", ex);
             }
         }
 
@@ -475,42 +555,17 @@ namespace PuntoVenta.Perifericos.Host
             ImpresionComprobanteRequest solicitud =
                 await LeerCuerpoAsync<ImpresionComprobanteRequest>(contexto).ConfigureAwait(false);
 
-            if (solicitud == null)
+            string problema = ValidarSolicitudDeImpresion(solicitud);
+            if (problema != null)
             {
-                await ResponderAsync(contexto, 400, Error("El cuerpo JSON no es válido."));
-                return;
-            }
-
-            if (solicitud.venta == null || solicitud.emisor == null || solicitud.contexto == null)
-            {
-                await ResponderAsync(
-                    contexto, 400, Error("Se requieren 'venta', 'emisor' y 'contexto'."));
-                return;
-            }
-
-            if (string.IsNullOrWhiteSpace(solicitud.venta.serie_numero))
-            {
-                await ResponderAsync(contexto, 400, Error("La venta debe traer 'serie_numero'."));
+                await ResponderAsync(contexto, 400, Error(problema));
                 return;
             }
 
             // Se valida con el propio predicado del modelo en vez de repetir la
             // regla acá: el ticket sin RUC o sin razón social no es un ticket.
             EmisorImpresion emisor = solicitud.emisor.AModelo();
-            if (!emisor.PuedeEmitir())
-            {
-                await ResponderAsync(
-                    contexto, 400, Error("El emisor debe traer 'ruc' y 'razon_social'."));
-                return;
-            }
-
             ComprobanteImpresion venta = solicitud.venta.AModelo();
-            if (venta == null)
-            {
-                await ResponderAsync(
-                    contexto, 400, Error("La venta debe traer al menos una línea válida."));
-                return;
-            }
 
             ImpresionEnCache impresion;
             bool impresoAhora = false;
@@ -536,35 +591,57 @@ namespace PuntoVenta.Perifericos.Host
                 return;
             }
 
-            await EsperarImpresionAsync(contexto, clave, impresion, impresoAhora);
+            await ResponderImpresionAsync(contexto, clave, impresion, impresoAhora);
         }
 
         /// <summary>
         /// Espera el resultado memorizado y responde. Si la impresión falló, se
         /// olvida la clave para que el reintento pueda imprimir otra vez.
         /// </summary>
-        private async Task EsperarImpresionAsync(
+        private async Task ResponderImpresionAsync(
             HttpListenerContext contexto, Guid clave, ImpresionEnCache impresion, bool impresoAhora)
         {
-            ResultadoImpresion resultado;
+            ResultadoImpresion resultado =
+                await EsperarImpresionAsync(clave, impresion).ConfigureAwait(false);
+            await ResponderAsync(
+                contexto, 200, RespuestaDeImpresion(impresion, resultado, impresoAhora));
+        }
+
+        /// <summary>
+        /// Espera la impresión y, si falló, suelta la clave.
+        ///
+        /// A diferencia del cobro, acá SÓLO se memoriza lo que salió bien: un
+        /// cobro fallido no se reintenta con la misma clave —reintentaría la
+        /// venta—, pero una impresión fallida sí, porque el cajero prende la
+        /// impresora, carga papel y vuelve a pedir el ticket. Memorizar el fallo
+        /// dejaría la clave envenenada 24 horas.
+        /// </summary>
+        private async Task<ResultadoImpresion> EsperarImpresionAsync(
+            Guid clave, ImpresionEnCache impresion)
+        {
             try
             {
-                resultado = await impresion.Resultado.ConfigureAwait(false);
+                return await impresion.Resultado.ConfigureAwait(false);
             }
             catch
             {
                 OlvidarImpresion(clave, impresion);
                 throw;
             }
+        }
 
-            await ResponderAsync(contexto, 200, new Dictionary<string, object>
+        /// <summary>Lo que el backend espera de un ticket ya entregado a la cola.</summary>
+        private static Dictionary<string, object> RespuestaDeImpresion(
+            ImpresionEnCache impresion, ResultadoImpresion resultado, bool impresoAhora)
+        {
+            return new Dictionary<string, object>
             {
                 { "impreso", true },
                 { "ya_impreso", !impresoAhora },
                 { "impresora", resultado.Impresora },
                 { "serie_numero", impresion.SerieNumero },
                 { "copia", impresion.Copia },
-            });
+            };
         }
 
         private bool BuscarImpresion(Guid clave, out ImpresionEnCache impresion)
@@ -656,6 +733,30 @@ namespace PuntoVenta.Perifericos.Host
         }
 
         /// <summary>
+        /// Comprueba el comprobante antes de gastar papel.
+        ///
+        /// Devuelve el motivo por el que no se puede imprimir, o <c>null</c> si
+        /// está bien. Existe aparte porque el ticket llega por dos caminos —el
+        /// HTTP local y la orden del agente remoto— y las dos puertas tienen que
+        /// exigir exactamente lo mismo; si divergieran, un ticket inválido
+        /// entraría por la que se quedó atrás.
+        /// </summary>
+        private static string ValidarSolicitudDeImpresion(ImpresionComprobanteRequest solicitud)
+        {
+            if (solicitud == null)
+                return "El cuerpo JSON no es válido.";
+            if (solicitud.venta == null || solicitud.emisor == null || solicitud.contexto == null)
+                return "Se requieren 'venta', 'emisor' y 'contexto'.";
+            if (string.IsNullOrWhiteSpace(solicitud.venta.serie_numero))
+                return "La venta debe traer 'serie_numero'.";
+            if (!solicitud.emisor.AModelo().PuedeEmitir())
+                return "El emisor debe traer 'ruc' y 'razon_social'.";
+            if (solicitud.venta.AModelo() == null)
+                return "La venta debe traer al menos una línea válida.";
+            return null;
+        }
+
+        /// <summary>
         /// Diagnóstico de la impresora: a qué cola se manda y con qué formato.
         ///
         /// Responde 200 aunque no haya impresora —la consulta se contestó bien—
@@ -670,6 +771,15 @@ namespace PuntoVenta.Perifericos.Host
                 return;
             }
 
+            await ResponderAsync(contexto, 200, DiagnosticoDeImpresora());
+        }
+
+        /// <summary>
+        /// Lo que este equipo sabe de su impresora. La comparten el HTTP local y
+        /// el agente remoto: el cajero tiene que leer lo mismo por las dos vías.
+        /// </summary>
+        private static Dictionary<string, object> DiagnosticoDeImpresora()
+        {
             string impresora = null;
             string detalle = null;
             try
@@ -681,14 +791,14 @@ namespace PuntoVenta.Perifericos.Host
                 detalle = ex.Message;
             }
 
-            await ResponderAsync(contexto, 200, new Dictionary<string, object>
+            return new Dictionary<string, object>
             {
                 { "disponible", impresora != null },
                 { "impresora", impresora },
                 { "detalle", detalle },
                 { "columnas", EscPos.Columnas },
                 { "pagina_codigos", EscPos.PaginaCodigos },
-            });
+            };
         }
 
         // ------------------------------------------------------------ comunes
