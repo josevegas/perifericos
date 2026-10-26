@@ -71,11 +71,14 @@
     <Compile Include="Infrastructure\Impresion\NumeroEnLetras.cs" />
     <Compile Include="Infrastructure\Pinpad\PCLdll.cs" />
     <Compile Include="Infrastructure\Pinpad\TLVClass.cs" />
+    <Compile Include="Models\Impresion\ComprobanteElectronicoImpresion.cs" />
+    <Compile Include="Models\Impresion\ConstanciaAnulacionImpresion.cs" />
     <Compile Include="Models\Impresion\ComprobanteImpresion.cs" />
     <Compile Include="Models\Pinpad\CobroTarjetaResultado.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Services\ImpresionService.cs" />
     <Compile Include="Services\PinpadService.cs" />
+    <Compile Include="Services\TicketConstancia.cs" />
     <Compile Include="Services\TicketVenta.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

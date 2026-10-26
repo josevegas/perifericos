@@ -75,7 +75,7 @@ Compila `Host\SmartOne.Perifericos.Host.csproj` en Release x64 y ejecuta
 | ----------------------------------- | --------------------------------- | ----------------- |
 | `/api/v1/pinpad/cobrar`             | Cobrar en el pinpad               | Obligatorio       |
 | `/api/v1/pinpad/probar`             | Probar eco PCL sin cobrar         | No se usa         |
-| `/api/v1/impresion/comprobante`     | Imprimir el comprobante           | Obligatorio       |
+| `/api/v1/impresion/comprobante`     | Imprimir comprobante o anulación  | Obligatorio       |
 | `/api/v1/impresion/gaveta`          | Abrir la gaveta de dinero         | No se usa         |
 | `/api/v1/impresion/estado`          | Diagnóstico de la impresora       | No se usa         |
 
@@ -246,13 +246,22 @@ depender de los modelos de venta del POS:
     "razon_social": "GRIFO LOS PERIFERICOS SAC",
     "nombre_comercial": "GRIFO PERIFERICOS",
     "direccion": "AV. SIEMPRE VIVA 123",
-    "domicilio_fiscal": "AV. SIEMPRE VIVA 123 - LIMA",
+    "domicilio_fiscal": "JR. LOS OLIVOS 456",
     "distrito": "LIMA",
     "provincia": "LIMA",
     "departamento": "LIMA",
+    "domicilio_fiscal_distrito": "LIMA",
+    "domicilio_fiscal_provincia": "LIMA",
+    "domicilio_fiscal_departamento": "LIMA",
     "telefono": "01-5551234"
   },
   "contexto": { "cajero": "JOSE VEGAS", "turno_numero": 1, "nro_serie_maquina": "CAJA-01" },
+  "electronico": {
+    "hash": "z95hatPfBCVl+8ntbzY2EqLfVcQ=",
+    "contenido_qr": "z95hatPfBCVl+8ntbzY2EqLfVcQ=",
+    "resolucion": "0340050003955",
+    "url_validacion": "https://sfe.bizlinks.com.pe/"
+  },
   "copia": false
 }
 ```
@@ -261,6 +270,35 @@ depender de los modelos de venta del POS:
 `ruc` y la `razon_social` del emisor y la `descripcion` de la línea: no se
 imprime un cargo sin nombre. `pagos` es opcional. `copia` marca el papel como
 copia; se usa para la segunda impresión que pide el cliente.
+
+La cabecera sale del bloque `emisor`, en el mismo orden y con la misma
+información que el comprobante que emite el backend: la razón social, la
+dirección de la sede con su ubigeo debajo, el domicilio fiscal con su ubigeo
+debajo y el RUC, todo centrado y en un renglón por dato. Los ubigeos se
+imprimen como `distrito - provincia - departamento`; el del domicilio fiscal
+cae al de la sede cuando no viene, porque el emisor declara un solo ubigeo por
+ahora. Los campos que falten simplemente no ocupan renglón: una sede sin
+`direccion` cargada no imprime la dirección fiscal como si fuera suya.
+
+`electronico` es la constancia que devolvió Bizlinks y es **opcional**: el
+ticket se imprime igual sin ella, pero le falta el bloque del pie con el hash,
+el QR, la resolución y la URL de validación. Va en la raíz de la solicitud, al
+mismo nivel que `venta` —que es donde la manda el backend—; también se acepta
+dentro de `venta` por compatibilidad. Esos datos no los puede deducir la
+impresora —son de la emisión— y por eso no se rellenan cuando faltan:
+
+- `hash`: cadena del comprobante, impresa sobre el QR. Junto con
+  `contenido_qr` es lo único indispensable para que salga el bloque.
+- `contenido_qr`: lo que codifica el QR. Si no viene se usa `hash`, que es lo
+  que trae el comprobante real.
+- `resolucion`: número que autoriza la representación impresa. Si no viene se
+  usa `0340050003955`.
+- `url_validacion`: portal de validación. Si no viene se usa
+  `https://sfe.bizlinks.com.pe/`.
+
+El texto «REPRESENTACION IMPRESA DE LA BOLETA» o «… DE LA FACTURA» se arma
+según `tipo_documento`, y `tipo_documento` puede venir como nombre largo
+(`BOLETA DE VENTA ELECTRONICA`, `FACTURA ELECTRONICA`).
 
 La respuesta es `200`:
 
@@ -288,6 +326,64 @@ Reglas de repetición:
 - La clave del comprobante es independiente de la del cobro, aunque sean el
   mismo UUID: se puede usar la clave de la venta para cobrar y para imprimir.
 - El cuerpo máximo es 64 KB (`413` si se excede).
+
+#### Constancia de anulación (HTTP)
+
+El mismo `/api/v1/impresion/comprobante` imprime el papel que se le entrega al
+cliente cuando se le devuelve el importe de una venta. El sobre cambia de
+forma: en vez de `venta` trae `anulacion`, y `documento` dice cuál de los dos
+papeles es:
+
+```json
+{
+  "documento": "CONSTANCIA_ANULACION",
+  "anulacion": {
+    "comprobante": "B001-00000001",
+    "tipo_comprobante": "BOLETA DE VENTA",
+    "fecha_emision": "2026-10-15",
+    "hora_emision": "10:32:11",
+    "cliente_documento": "44556677",
+    "importe_total": "3.50",
+    "fecha_anulacion": "2026-10-15",
+    "hora_anulacion": "10:41:07",
+    "motivo": "Cliente devuelve el producto: empaque dañado",
+    "monto_devuelto": "3.50",
+    "medio_devuelto": "EFECTIVO",
+    "baja_pendiente": true,
+    "estado_comprobante": "ACEPTADO",
+    "hash": "z95hatPfBCVI+8ntbzY2EqLFvCQ="
+  },
+  "emisor": { "ruc": "20175642341", "razon_social": "E/S SAN JOSE S.A.C." },
+  "contexto": { "cajero": "MARIA LOPEZ", "turno_numero": 12, "nro_serie_maquina": "B001", "codigo_terminal": "CAJA-03" },
+  "copia": false
+}
+```
+
+`documento` es opcional y vacío significa ticket, para que un backend anterior a
+la constancia siga imprimiendo igual. Además la constancia se reconoce por la
+sola presencia de `anulacion` —un ticket nunca la trae—, así que un sobre mal
+etiquetado no se imprime como si fuera una venta. Lo único obligatorio dentro
+de `anulacion` es `comprobante`: sin él no se sabe qué documento quedó sin
+efecto y la impresión falla en vez de gastar papel.
+
+La constancia **no lleva QR ni resolución de autorización**: no es un
+comprobante tributario y no se declara ante SUNAT. El `hash` que imprime es el
+del comprobante anulado, rotulado «Hash del comprobante», para poder cotejarlo
+contra el papel que el cliente ya tenía. Si `estado_comprobante`, `hash` y
+`baja_pendiente` vienen vacíos no se imprime ese bloque: la venta no pasó por
+Bizlinks y un renglón vacío sugeriría un trámite que no existe.
+
+El motivo se imprime completo y envuelto —es la razón de ser del papel—, y
+arriba lleva el renglón «Recibí conforme» para que el original firmado sostenga
+el egreso de efectivo en el arqueo. La copia se marca `** COPIA **` arriba y
+«COPIA - el original quedó en caja» al pie.
+
+Las reglas de repetición son las mismas que las del ticket, con una diferencia:
+la clave memorizada compara también **qué papel** es, además de `serie_numero`
+y `copia`. Para la constancia, `serie_numero` es el número del comprobante
+anulado. Así una constancia y un ticket que por error compartieran número no se
+confunden, y la respuesta `200` sigue devolviendo el `serie_numero` que el
+backend espera validar.
 
 #### Abrir gaveta
 
@@ -336,7 +432,9 @@ y el permiso `VEN.EDIT`; envía el mismo `Idempotency-Key` en la cabecera y
 `{"monto": 25.50}` en el cuerpo. Si la respuesta no viene o agota el tiempo,
 consulta el pinpad y el voucher antes de reintentar. Las rutas de impresión se
 usan igual: `POST /api/v1/impresion/comprobante` con el comprobante completo y
-el mismo `Idempotency-Key` de la venta; repetirlo no saca un segundo papel.
+el mismo `Idempotency-Key` de la venta; repetirlo no saca un segundo papel. La
+constancia de anulación entra por esa misma ruta con `documento` y `anulacion`
+en lugar de `venta`, y con su propia clave derivada del `venta_id`.
 Para una prueba no monetaria, FastAPI expone `POST /api/v1/pinpad/probar`,
 protegido con autenticación y `VEN.VER`; `comunicacion_ok: true` confirma que el
 eco PCL recibió respuesta del equipo.
@@ -362,9 +460,37 @@ impresora.Imprimir(venta, emisor,
 `venta` y `emisor` son instancias de `ComprobanteImpresion` y
 `EmisorImpresion`; se asignan desde los datos del servicio consumidor.
 
+Para que el ticket lleve el bloque del comprobante electrónico, asigna
+`venta.Electronico` con los datos que devolvió Bizlinks; sin él el papel sale
+sin QR:
+
+```csharp
+venta.Electronico = new ComprobanteElectronicoImpresion
+{
+    Hash = hash,             // se imprime sobre el QR
+    ContenidoQr = hash,      // opcional; si falta se usa Hash
+    Resolucion = "0340050003955",
+    UrlValidacion = "https://sfe.bizlinks.com.pe/",
+};
+```
+
 Si se omite el nombre en el constructor, se usa `impresora_ticket` de la
 configuración del proceso consumidor; si no está configurado, se busca una
 cola térmica reconocible. No se usa la impresora predeterminada.
+
+La constancia de anulación tiene su propia entrada, con el mismo emisor y el
+mismo contexto porque el cliente tiene que reconocer el mismo negocio y la misma
+caja en los dos papeles:
+
+```csharp
+impresora.ImprimirConstancia(constancia, emisor, contexto, copia: false);
+```
+
+`constancia` es una `ConstanciaAnulacionImpresion`. No lleva QR ni resolución:
+no es un comprobante tributario. El armado del papel vive en `TicketConstancia`
+y comparte con `TicketVenta` la cabecera del emisor y el pie —cajero, turno,
+caja, hora de impresión y versión—, para que los dos papeles se lean como del
+mismo sistema.
 
 ## Despliegue
 

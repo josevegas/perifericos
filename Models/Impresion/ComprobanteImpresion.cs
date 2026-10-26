@@ -22,6 +22,12 @@ namespace PuntoVenta.Models.Impresion
         // Compatibilidad con comprobantes antiguos que solo traen una línea.
         public LineaComprobanteImpresion Linea { get; set; }
         public List<PagoComprobanteImpresion> Pagos { get; set; }
+
+        /// <summary>
+        /// Constancia de Bizlinks. <c>null</c> cuando la venta no se emitió
+        /// electrónicamente: en ese caso el ticket no lleva QR.
+        /// </summary>
+        public ComprobanteElectronicoImpresion Electronico { get; set; }
     }
 
     public sealed class LineaComprobanteImpresion
@@ -56,6 +62,9 @@ namespace PuntoVenta.Models.Impresion
         public string Distrito { get; set; }
         public string Provincia { get; set; }
         public string Departamento { get; set; }
+        public string DomicilioFiscalDistrito { get; set; }
+        public string DomicilioFiscalProvincia { get; set; }
+        public string DomicilioFiscalDepartamento { get; set; }
         public string Telefono { get; set; }
 
         public bool PuedeEmitir()
@@ -64,12 +73,32 @@ namespace PuntoVenta.Models.Impresion
                    !string.IsNullOrWhiteSpace(RazonSocial);
         }
 
+        /// <summary>Ubigeo de la sede del market, como "Distrito - Provincia - Departamento".</summary>
         public string Ubicacion()
         {
+            return Unir(Distrito, Provincia, Departamento);
+        }
+
+        /// <summary>
+        /// Ubigeo del domicilio fiscal, el que SUNAT tiene ligado al RUC. Cae al
+        /// de la sede cuando el emisor no manda uno propio: mientras el ubigeo
+        /// sea el mismo, el comprobante lo repite debajo de las dos direcciones,
+        /// que es como sale hoy el ticket que ya se emite.
+        /// </summary>
+        public string UbicacionFiscal()
+        {
+            string fiscal = Unir(
+                DomicilioFiscalDistrito, DomicilioFiscalProvincia, DomicilioFiscalDepartamento);
+
+            return fiscal.Length > 0 ? fiscal : Ubicacion();
+        }
+
+        private static string Unir(string distrito, string provincia, string departamento)
+        {
             var partes = new List<string>();
-            if (!string.IsNullOrWhiteSpace(Distrito)) partes.Add(Distrito.Trim());
-            if (!string.IsNullOrWhiteSpace(Provincia)) partes.Add(Provincia.Trim());
-            if (!string.IsNullOrWhiteSpace(Departamento)) partes.Add(Departamento.Trim());
+            if (!string.IsNullOrWhiteSpace(distrito)) partes.Add(distrito.Trim());
+            if (!string.IsNullOrWhiteSpace(provincia)) partes.Add(provincia.Trim());
+            if (!string.IsNullOrWhiteSpace(departamento)) partes.Add(departamento.Trim());
             return string.Join(" - ", partes);
         }
     }

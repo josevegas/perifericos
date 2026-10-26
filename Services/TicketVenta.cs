@@ -51,12 +51,15 @@ namespace PuntoVenta.Services
     /// Ancho: <see cref="EscPos.Columnas"/> columnas (fuente B sobre papel de
     /// 80 mm), medido en la TM-T20III. Ver el porqué del número ahí.
     ///
-    /// LO QUE EL TICKET NO TIENE, A PROPÓSITO: el código QR, el texto sobre el
-    /// QR, "AUTORIZADO MEDIANTE RESOLUCIÓN" y la URL de validación. Esos cuatro
-    /// no son formato — son la constancia de que SUNAT aceptó el comprobante,
-    /// y solo existen si de verdad se emitió por Bizlinks (el legacy los
-    /// espera con <c>frmMenu.esperaRespuestaBizlinks</c> antes de imprimir).
-    /// Imprimirlos sin haber emitido sería falsificar un documento tributario.
+    /// LO QUE EL TICKET NO INVENTA: el código QR, el hash, "AUTORIZADO
+    /// MEDIANTE RESOLUCIÓN" y la URL de validación no son formato — son la
+    /// constancia de que SUNAT aceptó el comprobante, y solo existen si de
+    /// verdad se emitió por Bizlinks (el legacy los espera con
+    /// <c>frmMenu.esperaRespuestaBizlinks</c> antes de imprimir). Por eso el
+    /// bloque se imprime únicamente cuando <see cref="ComprobanteImpresion.Electronico"/>
+    /// trae los datos que devolvió Bizlinks: sin ellos el papel sale como una
+    /// venta no electrónica. Rellenarlos sería falsificar un documento
+    /// tributario.
     /// </summary>
     public static class TicketVenta
     {
@@ -95,7 +98,9 @@ namespace PuntoVenta.Services
             Pagos(t, venta);
             MontoEnLetras(t, venta);
             DatosDelDespacho(t, venta);
-            Pie(t, contexto, copia);
+            Pie(t, contexto);
+            ComprobanteElectronico(t, venta);
+            Despedida(t, copia);
 
             t.Append(EscPos.Cortar);
             return t.ToString();
@@ -111,34 +116,38 @@ namespace PuntoVenta.Services
 
         // --- Bloques -----------------------------------------------------------
 
-        private static void Cabecera(StringBuilder t, EmisorImpresion emisor)
+        internal static void Cabecera(StringBuilder t, EmisorImpresion emisor)
         {
             t.Append(EscPos.Centro);
 
-            // El nombre comercial es el que reconoce el cliente; la razón social
-            // es la que exige SUNAT. Van los dos, con el comercial destacado.
-            string titulo = string.IsNullOrWhiteSpace(emisor.NombreComercial)
-                ? emisor.RazonSocial
-                : emisor.NombreComercial;
+            // Un solo renglón con la razón social: es la que identifica al
+            // emisor ante SUNAT y la que trae el comprobante que ya se emite.
+            // El nombre comercial solo entra cuando no hay razón social.
+            string titulo = string.IsNullOrWhiteSpace(emisor.RazonSocial)
+                ? emisor.NombreComercial
+                : emisor.RazonSocial;
+            Lineas(t, titulo);
 
-            // Doble ancho: cada carácter ocupa 2, así que el límite es la
-            // mitad de las columnas normales.
-            t.Append(EscPos.Grande).Append(Recortar(titulo, EscPos.Columnas / 1)).Append('\n')
-             .Append(EscPos.Normal);
+            // Dirección FÍSICA de esta sede con su ubigeo, y debajo el
+            // domicilio LEGAL ligado al RUC con el suyo. SUNAT exige mostrar
+            // las dos y no son la misma cosa; cada una se lee con su terna.
+            // Un market sin dirección cargada no imprime el renglón: heredar
+            // la fiscal sería afirmar que el local está donde no está.
+            if (!string.IsNullOrWhiteSpace(emisor.Direccion))
+            {
+                Lineas(t, emisor.Direccion);
+                string ubicacion = emisor.Ubicacion();
+                if (ubicacion.Length > 0) Lineas(t, ubicacion);
+            }
 
-            if (!string.IsNullOrWhiteSpace(emisor.NombreComercial))
-                Lineas(t, emisor.RazonSocial);
-
-            // Dirección FÍSICA de esta sede primero, después la de ubicación,
-            // y recién el domicilio LEGAL ligado al RUC (el mismo para las 21
-            // estaciones). SUNAT exige mostrar las dos y no son la misma cosa.
-            Lineas(t, emisor.Direccion);
-            string ubicacion = emisor.Ubicacion();
-            if (!string.IsNullOrWhiteSpace(ubicacion)) Lineas(t, ubicacion);
             if (!string.IsNullOrWhiteSpace(emisor.DomicilioFiscal))
+            {
                 Lineas(t, emisor.DomicilioFiscal);
+                string ubicacionFiscal = emisor.UbicacionFiscal();
+                if (ubicacionFiscal.Length > 0) Lineas(t, ubicacionFiscal);
+            }
 
-            t.Append("RUC ").Append(emisor.Ruc.Trim()).Append('\n');
+            t.Append(emisor.Ruc.Trim()).Append('\n');
 
             if (!string.IsNullOrWhiteSpace(emisor.Telefono))
                 t.Append("Telf. ").Append(emisor.Telefono.Trim()).Append('\n');
@@ -332,7 +341,7 @@ namespace PuntoVenta.Services
             return ((char)('a' + numero - 1)).ToString();
         }
 
-        private static void Pie(StringBuilder t, ContextoImpresion contexto, bool copia)
+        internal static void Pie(StringBuilder t, ContextoImpresion contexto)
         {
             t.Append('\n');
             if (!string.IsNullOrWhiteSpace(contexto.Cajero))
@@ -350,7 +359,57 @@ namespace PuntoVenta.Services
             t.Append("Impreso: ")
              .Append(DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss", Peru))
              .Append("  v").Append(Version()).Append('\n');
+        }
 
+        /// <summary>
+        /// La resolución que autoriza la representación impresa, cuando Bizlinks
+        /// no la manda. Es la que figura hoy en los comprobantes de la empresa.
+        /// </summary>
+        private const string ResolucionPorDefecto = "0340050003955";
+
+        /// <summary>Portal donde SUNAT/Bizlinks valida el comprobante.</summary>
+        private const string UrlValidacionPorDefecto = "https://sfe.bizlinks.com.pe/";
+
+        /// <summary>
+        /// El bloque de la representación impresa: hash, QR, autorización y
+        /// portal de validación, en ese orden, como en el comprobante real.
+        ///
+        /// SI NO HAY DATOS DE BIZLINKS NO SE IMPRIME NADA. Este bloque no es
+        /// decoración: dice que SUNAT aceptó ESTE comprobante. Un QR de
+        /// relleno, o el de otra venta, manda al cliente a un documento que no
+        /// existe y convierte el papel en una falsificación.
+        /// </summary>
+        private static void ComprobanteElectronico(StringBuilder t, ComprobanteImpresion venta)
+        {
+            ComprobanteElectronicoImpresion electronico = venta.Electronico;
+            if (electronico == null || !electronico.PuedeImprimir()) return;
+
+            t.Append('\n').Append(EscPos.Centro);
+
+            string hash = (electronico.Hash ?? string.Empty).Trim();
+            if (hash.Length > 0) Lineas(t, hash);
+
+            t.Append(EscPos.Qr(electronico.ContenidoDelQr())).Append('\n');
+
+            string resolucion = string.IsNullOrWhiteSpace(electronico.Resolucion)
+                ? ResolucionPorDefecto
+                : electronico.Resolucion.Trim();
+            Lineas(t, "AUTORIZADO MEDIANTE RESOLUCION NRO " + resolucion);
+
+            Lineas(t, "REPRESENTACION IMPRESA DE LA " + DocumentoLegal(venta.TipoDocumento));
+
+            Lineas(t, "ESTE DOCUMENTO PUEDE SER VALIDADO EN");
+
+            string url = string.IsNullOrWhiteSpace(electronico.UrlValidacion)
+                ? UrlValidacionPorDefecto
+                : electronico.UrlValidacion.Trim();
+            Lineas(t, url);
+
+            t.Append(EscPos.Izquierda);
+        }
+
+        private static void Despedida(StringBuilder t, bool copia)
+        {
             t.Append('\n').Append(EscPos.Centro);
             if (copia)
                 t.Append("REIMPRESION - no es un segundo cobro\n");
@@ -382,15 +441,29 @@ namespace PuntoVenta.Services
             }
         }
 
+        /// <summary>
+        /// El tipo suele llegar como "BOLETA DE VENTA ELECTRONICA" o "FACTURA
+        /// ELECTRONICA", no como la palabra sola: se busca adentro y no se
+        /// compara entero, o toda factura saldría rotulada como boleta.
+        /// </summary>
+        private static bool EsFactura(string tipo)
+        {
+            return (tipo ?? string.Empty).IndexOf("FACTURA", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         private static string Titulo(string tipo)
         {
-            return string.Equals(tipo, "FACTURA", StringComparison.OrdinalIgnoreCase)
-                ? "FACTURA"
-                : "BOLETA DE VENTA";
+            return EsFactura(tipo) ? "FACTURA" : "BOLETA DE VENTA";
+        }
+
+        /// <summary>Como lo nombra la constancia impresa: "DE LA BOLETA" o "DE LA FACTURA".</summary>
+        private static string DocumentoLegal(string tipo)
+        {
+            return EsFactura(tipo) ? "FACTURA" : "BOLETA";
         }
 
         /// <summary>"S/ 5.00", siempre con dos decimales.</summary>
-        private static string Monto(decimal valor)
+        internal static string Monto(decimal valor)
         {
             return "S/ " + valor.ToString("N2", Peru);
         }
@@ -405,7 +478,7 @@ namespace PuntoVenta.Services
         /// lee acá; si viniera en otro formato se imprime tal cual antes que
         /// dejar el renglón vacío.
         /// </summary>
-        private static string FechaLegible(string iso)
+        internal static string FechaLegible(string iso)
         {
             DateTime fecha;
             if (DateTime.TryParse(iso, CultureInfo.InvariantCulture,
@@ -416,7 +489,7 @@ namespace PuntoVenta.Services
             return iso ?? string.Empty;
         }
 
-        private static string Recortar(string texto, int largo)
+        internal static string Recortar(string texto, int largo)
         {
             texto = (texto ?? string.Empty).Trim();
             return texto.Length <= largo ? texto : texto.Substring(0, largo);
@@ -438,7 +511,7 @@ namespace PuntoVenta.Services
         }
 
         /// <summary>Vuelca un texto largo partido en líneas que entran a lo ancho.</summary>
-        private static void Lineas(StringBuilder t, string texto)
+        internal static void Lineas(StringBuilder t, string texto)
         {
             foreach (string linea in EscPos.Envolver(texto))
                 t.Append(linea).Append('\n');

@@ -363,11 +363,12 @@ namespace PuntoVenta.Perifericos.Host
             Guid clave, Dictionary<string, object> orden)
         {
             ImpresionComprobanteRequest solicitud = LeerSolicitudDeImpresion(orden);
-            string problema = ValidarSolicitudDeImpresion(solicitud);
+
+            TrabajoDeImpresion trabajo;
+            string problema = PrepararImpresion(solicitud, out trabajo);
             if (problema != null)
                 throw new InvalidOperationException(problema);
 
-            ComprobanteImpresion venta = solicitud.venta.AModelo();
             ImpresionEnCache impresion;
             bool impresoAhora = false;
 
@@ -377,11 +378,12 @@ namespace PuntoVenta.Perifericos.Host
                 // memorizar la clave, para que un fallo no la deje envenenada.
                 string impresora = ImpresionService.Impresora();
                 impresion = ObtenerOCrearImpresion(
-                    clave, impresora, venta, solicitud.emisor.AModelo(),
-                    solicitud.contexto.AModelo(), solicitud.copia, out impresoAhora);
+                    clave, impresora, trabajo,
+                    solicitud.emisor.AModelo(), solicitud.contexto.AModelo(),
+                    solicitud.copia, out impresoAhora);
             }
 
-            if (!impresion.Coincide(venta, solicitud.copia))
+            if (!impresion.Coincide(trabajo, solicitud.copia))
             {
                 throw new InvalidOperationException(
                     "La clave de idempotencia ya se utilizó para otro comprobante.");
@@ -555,7 +557,8 @@ namespace PuntoVenta.Perifericos.Host
             ImpresionComprobanteRequest solicitud =
                 await LeerCuerpoAsync<ImpresionComprobanteRequest>(contexto).ConfigureAwait(false);
 
-            string problema = ValidarSolicitudDeImpresion(solicitud);
+            TrabajoDeImpresion trabajo;
+            string problema = PrepararImpresion(solicitud, out trabajo);
             if (problema != null)
             {
                 await ResponderAsync(contexto, 400, Error(problema));
@@ -565,7 +568,6 @@ namespace PuntoVenta.Perifericos.Host
             // Se valida con el propio predicado del modelo en vez de repetir la
             // regla acá: el ticket sin RUC o sin razón social no es un ticket.
             EmisorImpresion emisor = solicitud.emisor.AModelo();
-            ComprobanteImpresion venta = solicitud.venta.AModelo();
 
             ImpresionEnCache impresion;
             bool impresoAhora = false;
@@ -579,11 +581,11 @@ namespace PuntoVenta.Perifericos.Host
                 ContextoImpresion contextoImpresion = solicitud.contexto.AModelo();
 
                 impresion = ObtenerOCrearImpresion(
-                    clave, impresora, venta, emisor, contextoImpresion, solicitud.copia,
+                    clave, impresora, trabajo, emisor, contextoImpresion, solicitud.copia,
                     out impresoAhora);
             }
 
-            if (!impresion.Coincide(venta, solicitud.copia))
+            if (!impresion.Coincide(trabajo, solicitud.copia))
             {
                 await ResponderAsync(
                     contexto, 409,
@@ -654,7 +656,7 @@ namespace PuntoVenta.Perifericos.Host
         }
 
         private ImpresionEnCache ObtenerOCrearImpresion(
-            Guid clave, string impresora, ComprobanteImpresion venta, EmisorImpresion emisor,
+            Guid clave, string impresora, TrabajoDeImpresion trabajo, EmisorImpresion emisor,
             ContextoImpresion contexto, bool copia, out bool creada)
         {
             lock (_candado)
@@ -672,10 +674,11 @@ namespace PuntoVenta.Perifericos.Host
 
                 var nueva = new ImpresionEnCache
                 {
-                    SerieNumero = venta.SerieNumero,
+                    Documento = trabajo.Documento,
+                    SerieNumero = trabajo.SerieNumero,
                     Copia = copia,
                     CreadoUtc = DateTimeOffset.UtcNow,
-                    Resultado = EjecutarImpresionAsync(impresora, venta, emisor, contexto, copia),
+                    Resultado = EjecutarImpresionAsync(impresora, trabajo, emisor, contexto, copia),
                 };
                 _impresiones.Add(clave, nueva);
                 creada = true;
@@ -694,7 +697,7 @@ namespace PuntoVenta.Perifericos.Host
         }
 
         private static Task<ResultadoImpresion> EjecutarImpresionAsync(
-            string impresora, ComprobanteImpresion venta, EmisorImpresion emisor,
+            string impresora, TrabajoDeImpresion trabajo, EmisorImpresion emisor,
             ContextoImpresion contexto, bool copia)
         {
             return Task.Run(() =>
@@ -702,7 +705,7 @@ namespace PuntoVenta.Perifericos.Host
                 // La impresora ya viene resuelta: se le pasa para que el
                 // servicio no vuelva a resolverla y el nombre informado sea
                 // exactamente el que recibió el trabajo.
-                new ImpresionService(impresora).Imprimir(venta, emisor, contexto, copia);
+                trabajo.Imprimir(impresora, emisor, contexto, copia);
                 return new ResultadoImpresion { Impresora = impresora };
             });
         }
@@ -733,26 +736,53 @@ namespace PuntoVenta.Perifericos.Host
         }
 
         /// <summary>
-        /// Comprueba el comprobante antes de gastar papel.
+        /// Comprueba el sobre y decide qué hay que imprimir.
         ///
-        /// Devuelve el motivo por el que no se puede imprimir, o <c>null</c> si
-        /// está bien. Existe aparte porque el ticket llega por dos caminos —el
-        /// HTTP local y la orden del agente remoto— y las dos puertas tienen que
-        /// exigir exactamente lo mismo; si divergieran, un ticket inválido
-        /// entraría por la que se quedó atrás.
+        /// Devuelve el motivo por el que no se puede imprimir, o <c>null</c> con
+        /// <paramref name="trabajo"/> ya armado. Existe aparte porque el papel
+        /// llega por dos caminos —el HTTP local y la orden del agente remoto— y
+        /// las dos puertas tienen que exigir exactamente lo mismo; si
+        /// divergieran, un sobre inválido entraría por la que se quedó atrás.
+        ///
+        /// Desde que la constancia de anulación viaja por este mismo endpoint,
+        /// el sobre puede traer dos cosas distintas. Se resuelve acá, una sola
+        /// vez, y el resto del camino ya no vuelve a preguntar de qué papel se
+        /// trata: repetir esa pregunta en cada puerta es cómo se cuela una
+        /// constancia por el camino del ticket y termina en un 400 que no
+        /// explica nada.
         /// </summary>
-        private static string ValidarSolicitudDeImpresion(ImpresionComprobanteRequest solicitud)
+        private static string PrepararImpresion(
+            ImpresionComprobanteRequest solicitud, out TrabajoDeImpresion trabajo)
         {
+            trabajo = null;
+
             if (solicitud == null)
                 return "El cuerpo JSON no es válido.";
-            if (solicitud.venta == null || solicitud.emisor == null || solicitud.contexto == null)
+            if (solicitud.emisor == null || solicitud.contexto == null)
+                return "Se requieren 'emisor' y 'contexto'.";
+            if (!solicitud.emisor.AModelo().PuedeEmitir())
+                return "El emisor debe traer 'ruc' y 'razon_social'.";
+
+            if (solicitud.EsConstanciaDeAnulacion())
+            {
+                ConstanciaAnulacionImpresion constancia = solicitud.AConstancia();
+                if (constancia == null || !constancia.PuedeImprimir())
+                    return "La constancia debe traer 'anulacion.comprobante'.";
+
+                trabajo = TrabajoDeImpresion.DeConstancia(constancia);
+                return null;
+            }
+
+            if (solicitud.venta == null)
                 return "Se requieren 'venta', 'emisor' y 'contexto'.";
             if (string.IsNullOrWhiteSpace(solicitud.venta.serie_numero))
                 return "La venta debe traer 'serie_numero'.";
-            if (!solicitud.emisor.AModelo().PuedeEmitir())
-                return "El emisor debe traer 'ruc' y 'razon_social'.";
-            if (solicitud.venta.AModelo() == null)
+
+            ComprobanteImpresion venta = solicitud.AModelo();
+            if (venta == null)
                 return "La venta debe traer al menos una línea válida.";
+
+            trabajo = TrabajoDeImpresion.DeVenta(venta);
             return null;
         }
 
@@ -967,19 +997,97 @@ namespace PuntoVenta.Perifericos.Host
 
         private sealed class ImpresionEnCache
         {
+            /// <summary>Qué papel es: un ticket o una constancia de anulación.</summary>
+            public string Documento { get; set; }
             public string SerieNumero { get; set; }
             public bool Copia { get; set; }
             public DateTimeOffset CreadoUtc { get; set; }
             public Task<ResultadoImpresion> Resultado { get; set; }
 
             /// <summary>Mismo comprobante y mismo tipo de papel, o no es un reintento.</summary>
-            public bool Coincide(ComprobanteImpresion venta, bool copia)
+            public bool Coincide(TrabajoDeImpresion trabajo, bool copia)
             {
                 return Copia == copia &&
                        string.Equals(
+                           Documento ?? string.Empty,
+                           trabajo.Documento ?? string.Empty,
+                           StringComparison.Ordinal) &&
+                       string.Equals(
                            SerieNumero ?? string.Empty,
-                           venta.SerieNumero ?? string.Empty,
+                           trabajo.SerieNumero ?? string.Empty,
                            StringComparison.Ordinal);
+            }
+        }
+
+        /// <summary>
+        /// El papel que se dedujo del sobre, ya armado.
+        ///
+        /// El endpoint de impresión atiende dos formatos desde que existe la
+        /// constancia de anulación: el ticket de venta y el comprobante de la
+        /// devolución. Los dos comparten la caché de idempotencia y la respuesta
+        /// —el backend espera el mismo sobre de vuelta—, así que lo que cambia
+        /// es sólo el armado y el envío. Envolver esa diferencia acá deja un
+        /// único «si es constancia» en todo el host.
+        /// </summary>
+        private sealed class TrabajoDeImpresion
+        {
+            private TrabajoDeImpresion() { }
+
+            /// <summary>Nulo cuando el papel es una constancia.</summary>
+            public ComprobanteImpresion Venta { get; private set; }
+
+            /// <summary>Nula cuando el papel es un ticket.</summary>
+            public ConstanciaAnulacionImpresion Constancia { get; private set; }
+
+            /// <summary>
+            /// Con qué se identifica el papel en la respuesta y en la caché.
+            ///
+            /// Para el ticket es la serie del comprobante; para la constancia, el
+            /// número del comprobante ANULADO, que es lo único que el backend
+            /// puede cotejar y lo que va impreso.
+            /// </summary>
+            public string SerieNumero
+            {
+                get
+                {
+                    if (Constancia != null) return Constancia.Comprobante ?? string.Empty;
+                    return Venta != null ? Venta.SerieNumero ?? string.Empty : string.Empty;
+                }
+            }
+
+            /// <summary>
+            /// Nombre del papel. Se compara junto con la serie para que una
+            /// constancia y un ticket del mismo comprobante no se confundan si
+            /// alguna vez comparten clave de idempotencia.
+            /// </summary>
+            public string Documento
+            {
+                get
+                {
+                    return Constancia != null
+                        ? ImpresionComprobanteRequest.DocumentoConstanciaAnulacion
+                        : "VENTA";
+                }
+            }
+
+            public static TrabajoDeImpresion DeVenta(ComprobanteImpresion venta)
+            {
+                return new TrabajoDeImpresion { Venta = venta };
+            }
+
+            public static TrabajoDeImpresion DeConstancia(ConstanciaAnulacionImpresion constancia)
+            {
+                return new TrabajoDeImpresion { Constancia = constancia };
+            }
+
+            public void Imprimir(
+                string impresora, EmisorImpresion emisor, ContextoImpresion contexto, bool copia)
+            {
+                var servicio = new ImpresionService(impresora);
+                if (Constancia != null)
+                    servicio.ImprimirConstancia(Constancia, emisor, contexto, copia);
+                else
+                    servicio.Imprimir(Venta, emisor, contexto, copia);
             }
         }
 

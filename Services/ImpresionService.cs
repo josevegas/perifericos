@@ -43,6 +43,26 @@ namespace PuntoVenta.Services
         }
 
         /// <summary>
+        /// Imprime la constancia de la venta anulada.
+        ///
+        /// Va aparte de <see cref="Imprimir"/> y no por dentro con un if: el
+        /// papel, el modelo y el descargo son otros. Igual que el ticket, LANZA
+        /// <see cref="ImpresionException"/> si falla, y quien llame tiene que
+        /// tratarlo como un problema de papel: la anulación YA está registrada.
+        /// </summary>
+        public void ImprimirConstancia(
+            ConstanciaAnulacionImpresion constancia, EmisorImpresion emisor,
+            ContextoImpresion contexto, bool copia = false)
+        {
+            if (constancia == null) throw new ArgumentNullException(nameof(constancia));
+
+            byte[] datos = TicketConstancia.Bytes(constancia, emisor, contexto, copia);
+
+            ImpresoraRaw.Enviar(
+                ObtenerImpresora(), datos, "Constancia " + constancia.Comprobante);
+        }
+
+        /// <summary>
         /// Nombres que delatan una térmica de tickets.
         ///
         /// El orden importa: primero lo más específico. "Receipt" es lo que le

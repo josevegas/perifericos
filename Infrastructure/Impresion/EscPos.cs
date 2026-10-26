@@ -108,6 +108,67 @@ namespace PuntoVenta.Infrastructure.Impresion
         public static readonly string AbrirGaveta =
             ESC + "p" + (char)0 + (char)25 + (char)250;
 
+        /// <summary>
+        /// Tope de datos del QR en bytes (modelo 2, corrección M).
+        ///
+        /// Pasarse no da un QR más chico: da un QR que no se lee, o que la
+        /// impresora descarta en silencio. Mejor rechazarlo con un motivo.
+        /// </summary>
+        private const int MaximoQr = 708;
+
+        /// <summary>
+        /// El QR nativo de la impresora (<c>GS ( k</c>, modelo 2).
+        ///
+        /// Se usa el comando de la térmica y no una imagen armada acá: la
+        /// TM-T20III lo dibuja nítido a cualquier tamaño, sin arrastrar una
+        /// librería de QR ni System.Drawing, y el tamaño en módulos lo elige
+        /// la impresora. Va con corrección M, el nivel habitual para un papel
+        /// que se manipula y se arruga.
+        ///
+        /// El símbolo sale alineado según el modo vigente (centrado en el
+        /// ticket). No imprime un salto de línea: quien lo llame decide.
+        /// </summary>
+        public static string Qr(string datos, int tamanoModulo = 4)
+        {
+            datos = (datos ?? string.Empty).Trim();
+            if (datos.Length == 0)
+                throw new ImpresionException(
+                    "El comprobante electrónico no trae datos para el código QR.", 0);
+
+            byte[] contenido = Codificacion.GetBytes(datos);
+            if (contenido.Length > MaximoQr)
+                throw new ImpresionException(
+                    "Los datos del código QR superan los " + MaximoQr + " bytes.", 0);
+
+            if (tamanoModulo < 1) tamanoModulo = 1;
+            if (tamanoModulo > 16) tamanoModulo = 16;
+
+            var qr = new StringBuilder();
+            qr.Append(GS).Append('(').Append('k')
+              .Append((char)4).Append((char)0)                    // pL, pH
+              .Append((char)49).Append((char)65)                  // cn, fn: modelo
+              .Append((char)50).Append((char)0)                   // modelo 2
+              .Append(GS).Append('(').Append('k')
+              .Append((char)3).Append((char)0)
+              .Append((char)49).Append((char)67)                  // cn, fn: módulo
+              .Append((char)tamanoModulo)
+              .Append(GS).Append('(').Append('k')
+              .Append((char)3).Append((char)0)
+              .Append((char)49).Append((char)69)                  // cn, fn: corrección
+              .Append((char)77);                                  // M
+
+            int longitud = contenido.Length + 3;
+            qr.Append(GS).Append('(').Append('k')
+              .Append((char)(longitud & 0xFF)).Append((char)(longitud >> 8))
+              .Append((char)49).Append((char)80).Append((char)48) // cn, fn, m: guardar
+              .Append(Codificacion.GetString(contenido));
+
+            qr.Append(GS).Append('(').Append('k')
+              .Append((char)3).Append((char)0)
+              .Append((char)49).Append((char)81).Append((char)48); // cn, fn, m: imprimir
+            return qr.ToString();
+        }
+
         /// <summary>Una línea de guiones del ancho del papel.</summary>
         public static string Separador()
         {
