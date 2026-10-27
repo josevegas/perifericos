@@ -39,6 +39,15 @@ namespace PuntoVenta.Services
         private const long TagCodigoRespuesta = 14679855;    // "00" aprobado, "05" denegada…
         private const long TagMensajeRespuesta = 14679852;   // texto del equipo/banco
 
+        // Medio con el que se cobró. No están en la trama de salida: llegan en la
+        // respuesta, y son la única forma de distinguir una billetera de una
+        // tarjeta (una billetera no trae tarjeta pero sí reporta estos datos).
+        // La marca viene en la raíz y el resto dentro del contenedor DF FF 34.
+        private const long TagDatosDelMedio = 14679860;  // DF FF 34: lote, red, cuenta, producto
+        private const long TagTipoCuenta = 14679872;     // DF FF 40: "DEBITO" / "CREDITO"
+        private const long TagMarcaEquipo = 14679873;    // DF FF 41: "VISA DEBITO", …
+        private const long TagProductoEquipo = 14679876; // DF FF 44: "VISA INTERNACIONAL", …
+
         private const string RespuestaAprobada = "00";
 
         private const long OperacionCompra = 10;
@@ -46,6 +55,26 @@ namespace PuntoVenta.Services
         private const long OperacionCierre = 15;
         private const long OperacionEcoTest = 20;
         private const long OperacionInicializar = 38;
+
+        /// <summary>
+        /// La trama PCL de este módulo NO lleva el medio de pago: sólo viajan la
+        /// operación (COMPRA) y el monto. La elección —tarjeta, Yape, Plin— la
+        /// hace el cliente en el menú de la app de Niubiz DENTRO del equipo, y
+        /// sólo aparece si el comercio tiene la billetera habilitada por Niubiz.
+        /// Por eso no existe «cobrar por Yape» desde acá: se puede LEER con qué se
+        /// pagó (ver <see cref="EsBilletera"/>), no imponerlo.
+        /// </summary>
+        public const bool SoportaIndicacionDeMedioPago = false;
+
+        /// <summary>
+        /// Nombres con los que el equipo puede reportar una billetera en la marca
+        /// o en el tipo de cuenta. Niubiz no publica el literal del PCL, así que
+        /// la comparación es por nombre comercial conocido; si aparece otro texto,
+        /// la venta igual se aprueba y queda el valor crudo en
+        /// <see cref="CobroTarjetaResultado.MarcaEquipo"/> para ampliar esta lista.
+        /// </summary>
+        private static readonly string[] NombresDeBilletera =
+            { "YAPE", "PLIN", "BIM", "TUNKI", "BILLETERA", "WALLET", "QR" };
 
         // Byte↔carácter 1:1 — la codificación del protocolo PCL/TLV.
         private static readonly Encoding Latin1 = Encoding.GetEncoding("ISO-8859-1");
@@ -452,6 +481,19 @@ namespace PuntoVenta.Services
             resultado.MensajeEquipo = LeerTexto(tlvRespuesta, raiz, TagMensajeRespuesta);
             Log("RESPUESTA codigo=" + resultado.CodigoRespuesta + " mensaje=" + resultado.MensajeEquipo);
 
+            // Con qué se cobró: el protocolo no lo da como campo, pero el equipo
+            // sí reporta marca, cuenta y producto. Sin esto una venta con
+            // billetera quedaba indistinguible de una con tarjeta.
+            resultado.MarcaEquipo = LeerTexto(tlvRespuesta, raiz, TagMarcaEquipo);
+            resultado.TipoCuenta = LeerTextoAnidado(
+                tlvRespuesta, raiz, TagDatosDelMedio, TagTipoCuenta);
+            resultado.ProductoEquipo = LeerTextoAnidado(
+                tlvRespuesta, raiz, TagDatosDelMedio, TagProductoEquipo);
+            resultado.Billetera = EsBilletera(
+                resultado.MarcaEquipo, resultado.TipoCuenta, resultado.ProductoEquipo);
+            Log("MEDIO marca=" + resultado.MarcaEquipo + " cuenta=" + resultado.TipoCuenta +
+                " producto=" + resultado.ProductoEquipo + " billetera=" + resultado.Billetera);
+
             // Igual que el legacy: sin voucher no hubo operación (rechazada o
             // cancelada en el equipo). En anulación suele significar que la
             // referencia no existe en el lote abierto — el caso más común es
@@ -474,6 +516,18 @@ namespace PuntoVenta.Services
             if (elemento == null) return null;
             string valor = tlv.GetTLVValueAscii(elemento);
             return string.IsNullOrWhiteSpace(valor) ? null : valor.Trim();
+        }
+
+        /// <summary>
+        /// Lee un tag que el equipo manda DENTRO de un contenedor (DF FF 34):
+        /// el parser de TLV no aplana a los hijos, así que hay que bajar al nodo
+        /// padre antes de buscarlo.
+        /// </summary>
+        private static string LeerTextoAnidado(
+            TLVClass tlv, XElement raiz, long contenedor, long tag)
+        {
+            XElement padre = tlv.GetTLVElement(raiz, contenedor);
+            return padre == null ? null : LeerTexto(tlv, padre, tag);
         }
 
         /// <summary>
@@ -596,6 +650,29 @@ namespace PuntoVenta.Services
                 if (linea.Contains("CAPTURA:"))
                     destino.Captura = EntreMarcas(linea, "CAPTURA:", "-");
             }
+        }
+
+        /// <summary>
+        /// Deduce si el cobro se hizo con billetera mirando lo que reportó el
+        /// equipo (marca y tipo de cuenta). Pura y estática a propósito: es la
+        /// parte que habrá que ajustar cuando Niubiz confirme el literal que
+        /// manda en una venta Yape/Plin.
+        /// </summary>
+        public static bool EsBilletera(params string[] valores)
+        {
+            if (valores == null) return false;
+
+            foreach (string valor in valores)
+            {
+                if (string.IsNullOrWhiteSpace(valor)) continue;
+
+                foreach (string nombre in NombresDeBilletera)
+                {
+                    if (valor.IndexOf(nombre, StringComparison.OrdinalIgnoreCase) >= 0)
+                        return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>Texto entre el fin de `desde` y el inicio de `hasta` (sin espacios).</summary>

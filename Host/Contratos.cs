@@ -11,6 +11,16 @@ namespace PuntoVenta.Perifericos.Host
     {
         /// <summary>Importe a cobrar, en soles.</summary>
         public decimal monto { get; set; }
+
+        /// <summary>
+        /// Medio con el que se quiere cobrar. Vacío o ausente significa tarjeta,
+        /// que es lo único que se le puede pedir al equipo: la trama PCL no lleva
+        /// el medio de pago, así que la billetera (Yape/Plin) sólo existe si el
+        /// cliente la elige en la pantalla del pinpad. Se acepta el campo para
+        /// rechazar el pedido con un motivo claro, en vez de que el JSON lo pierda
+        /// en silencio y termine cobrando una tarjeta.
+        /// </summary>
+        public string medio_pago { get; set; }
     }
 
     /// <summary>

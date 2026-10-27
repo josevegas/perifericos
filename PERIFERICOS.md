@@ -209,6 +209,41 @@ mientras el host siga ejecutándose devuelve el mismo resultado sin enviar otro
 cobro al equipo; usar la misma clave con otro monto responde `409`. Las claves
 se conservan durante 24 horas en memoria.
 
+La respuesta incluye, además del resultado del cobro, con qué se pagó:
+
+| Campo             | Ejemplo                     | Origen en el equipo        |
+|-------------------|-----------------------------|----------------------------|
+| `marca_equipo`    | `"VISA DEBITO"`             | tag `DF FF 41`             |
+| `tipo_cuenta`     | `"DEBITO"`                  | tag `DF FF 40` (dentro de `DF FF 34`) |
+| `producto_equipo` | `"VISA INTERNACIONAL"`      | tag `DF FF 44` (dentro de `DF FF 34`) |
+| `billetera`       | `true`                      | `true` si esos textos nombran Yape, Plin, BIM, Tunki o QR |
+
+##### Medio de pago y billeteras (Yape / Plin)
+
+La trama PCL que este módulo arma sólo lleva la operación, la fecha/hora y el
+monto: **no existe un campo para indicar el medio de pago**. El menú de medios
+(tarjeta, Yape, Plin…) lo muestra la aplicación de Niubiz dentro del propio
+LAN30BA, y depende de que Niubiz haya habilitado esas billeteras para el
+comercio y el terminal (parámetros que llegan por TMS).
+
+Por eso `POST /api/v1/pinpad/cobrar` acepta un campo opcional `medio_pago`:
+
+```json
+{ "monto": 25.50, "medio_pago": "TARJETA" }
+```
+
+- `TARJETA` (o el campo ausente) → se envía el cobro normal. El cliente elige
+  tarjeta/Yape/Plin en la pantalla del pinpad.
+- `BILLETERA`, `YAPE`, `PLIN`, `WALLET` → responde `501` con un mensaje que
+  explica que el medio se elige en el equipo. No se inventa una trama: el
+  protocolo no tiene ese tag.
+- Cualquier otro valor → `400`.
+
+Si en el pinpad no aparece el menú de billeteras al cobrar, el faltante está en
+la habilitación del comercio/terminal con Niubiz, no en este módulo. Como el
+equipo sí reporta el medio usado en los tags de arriba, un cobro con billetera
+que llegue aprobado se distingue por `billetera: true`.
+
 #### Impresión de comprobante (HTTP)
 
 `POST /api/v1/impresion/comprobante` recibe el comprobante completo, sin
@@ -430,7 +465,9 @@ aleatorio de al menos 32 caracteres. El host rechaza el arranque si falta. La
 API de FastAPI expone `POST /api/v1/pinpad/cobrar`, protegido por autenticación
 y el permiso `VEN.EDIT`; envía el mismo `Idempotency-Key` en la cabecera y
 `{"monto": 25.50}` en el cuerpo. Si la respuesta no viene o agota el tiempo,
-consulta el pinpad y el voucher antes de reintentar. Las rutas de impresión se
+consulta el pinpad y el voucher antes de reintentar. La API todavía no reenvía
+`medio_pago`; si algún día necesita cobrar billeteras, el pinpad debe tenerlas
+habilitadas por Niubiz (ver *Medio de pago y billeteras*). Las rutas de impresión se
 usan igual: `POST /api/v1/impresion/comprobante` con el comprobante completo y
 el mismo `Idempotency-Key` de la venta; repetirlo no saca un segundo papel. La
 constancia de anulación entra por esa misma ruta con `documento` y `anulacion`

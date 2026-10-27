@@ -224,6 +224,20 @@ namespace PuntoVenta.Perifericos.Host
                 return;
             }
 
+            string medio = NormalizarMedio(solicitud.medio_pago);
+            if (medio.Length > 0 && !EsMedioTarjeta(medio))
+            {
+                bool esBilletera = EsMedioBilletera(medio);
+                await ResponderAsync(
+                    contexto,
+                    esBilletera ? 501 : 400,
+                    Error(esBilletera
+                        ? MensajeBilleteraNoSoportada
+                        : "El medio de pago «" + solicitud.medio_pago.Trim() + "» no es válido. " +
+                          "Use «TARJETA» o deje el campo vacío."));
+                return;
+            }
+
             CobroEnCache cobro = ObtenerOCrearCobro(clave, solicitud.monto);
             if (cobro.Monto != solicitud.monto)
             {
@@ -296,6 +310,17 @@ namespace PuntoVenta.Perifericos.Host
                         monto <= 0)
                     {
                         throw new InvalidOperationException("La orden de cobro tiene un monto inválido.");
+                    }
+
+                    object medioValor;
+                    string medioOrden = orden.TryGetValue("medio_pago", out medioValor)
+                        ? NormalizarMedio(Convert.ToString(medioValor, CultureInfo.InvariantCulture))
+                        : string.Empty;
+                    if (medioOrden.Length > 0 && !EsMedioTarjeta(medioOrden))
+                    {
+                        throw new InvalidOperationException(EsMedioBilletera(medioOrden)
+                            ? MensajeBilleteraNoSoportada
+                            : "La orden de cobro tiene un medio de pago inválido.");
                     }
 
                     CobroEnCache cobro = ObtenerOCrearCobro(clave, monto);
@@ -921,6 +946,37 @@ namespace PuntoVenta.Perifericos.Host
             return diferencia == 0;
         }
 
+        private const string MensajeBilleteraNoSoportada =
+            "El cobro con billetera (Yape/Plin) no se puede pedir desde el sistema: la trama " +
+            "del pinpad sólo lleva la operación y el monto, así que el medio de pago lo elige " +
+            "el cliente en la pantalla del equipo. Si la billetera está habilitada por Niubiz, " +
+            "cobre como TARJETA y elija Yape/Plin en el pinpad; si ese menú no aparece, la " +
+            "habilitación del comercio/terminal está pendiente con Niubiz.";
+
+        private static string NormalizarMedio(string medio) =>
+            (medio ?? string.Empty).Trim().ToUpperInvariant();
+
+        /// <summary>
+        /// Todo lo que empiece con «TARJETA» se acepta (TARJETA, TARJETA_DEBITO,
+        /// TARJETA_CREDITO…): el equipo decide débito o crédito, este módulo no.
+        /// </summary>
+        private static bool EsMedioTarjeta(string medio) =>
+            medio.StartsWith("TARJETA", StringComparison.Ordinal);
+
+        private static bool EsMedioBilletera(string medio)
+        {
+            switch (medio)
+            {
+                case "BILLETERA":
+                case "YAPE":
+                case "PLIN":
+                case "WALLET":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         private static Dictionary<string, object> ConvertirResultado(CobroTarjetaResultado resultado)
         {
             return new Dictionary<string, object>
@@ -936,6 +992,10 @@ namespace PuntoVenta.Perifericos.Host
                 { "mensaje_error", resultado.MensajeError },
                 { "codigo_respuesta", resultado.CodigoRespuesta },
                 { "mensaje_equipo", resultado.MensajeEquipo },
+                { "marca_equipo", resultado.MarcaEquipo },
+                { "tipo_cuenta", resultado.TipoCuenta },
+                { "producto_equipo", resultado.ProductoEquipo },
+                { "billetera", resultado.Billetera },
             };
         }
 
