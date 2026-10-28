@@ -75,6 +75,9 @@ Compila `Host\SmartOne.Perifericos.Host.csproj` en Release x64 y ejecuta
 | ----------------------------------- | --------------------------------- | ----------------- |
 | `/api/v1/pinpad/cobrar`             | Cobrar en el pinpad               | Obligatorio       |
 | `/api/v1/pinpad/probar`             | Probar eco PCL sin cobrar         | No se usa         |
+| `/api/v1/pinpad/parametros`         | Leer la configuración TMS del pinpad | No se usa      |
+| `/api/v1/pinpad/actualizar-tms`     | Pedir al pinpad una descarga TMS  | No se usa         |
+| `/api/v1/pinpad/inicializar`        | Inicializar el terminal (operación 38) | No se usa    |
 | `/api/v1/impresion/comprobante`     | Imprimir comprobante o anulación  | Obligatorio       |
 | `/api/v1/impresion/gaveta`          | Abrir la gaveta de dinero         | No se usa         |
 | `/api/v1/impresion/estado`          | Diagnóstico de la impresora       | No se usa         |
@@ -243,6 +246,120 @@ Si en el pinpad no aparece el menú de billeteras al cobrar, el faltante está e
 la habilitación del comercio/terminal con Niubiz, no en este módulo. Como el
 equipo sí reporta el medio usado en los tags de arriba, un cobro con billetera
 que llegue aprobado se distingue por `billetera: true`.
+
+Para inspeccionar qué se le manda al equipo sin cobrar nada existe
+`PinpadService.ConstruirTramaPCL(monto)`: devuelve la trama TLV de una COMPRA.
+No es texto plano ni un prefijo de operación — es un documento con tag padre
+`0xFC`, tags binarios de 3 bytes y el monto en centavos BCD de 6 bytes (por
+ejemplo `S/ 12.50` → `DF FE 40 06 00 00 00 00 12 50`). La operación viaja en su
+propio tag como un byte (`DC 01 0A` = compra), nunca como `"01"`/`"20"`.
+
+##### Operaciones 20 y 22: no sirven para cobrar por billetera
+
+Existe la idea de que se puede forzar el cobro QR/billetera cambiando el byte
+de operación (tag `DC`) a `20` o `22`, o usando un supuesto flag
+`TRANS_TYPE_QR`. Los binarios nativos del SDK (`PCLService.dll`,
+`PCL_Bridge.dll`, `PclUtilities.dll`, `dllsign.dll`) **no contienen ningún
+símbolo `TRANS_TYPE_QR` ni `TransType`**, y `ITransactionIn` sólo admite
+`Amount, AuthorizationType, CtrlCheque, CurrencyCode, Operation, TermNum,
+UserData1`. En PCL el tipo de transacción *es* el byte de operación, no un tag
+aparte.
+
+Se probó en el LAN30BA real enviando el byte de operación a mano:
+
+| Operación enviada            | Respuesta del equipo                                              |
+|------------------------------|-------------------------------------------------------------------|
+| `22` sin monto               | `TRANSACCION FALLIDA` (`DF FF 2C`), código `03 00 00 00`, sin datos de medio |
+| `22` con `S/ 0.01`           | idéntica a la anterior: `TRANSACCION FALLIDA`, contenedor `DF FF 34` vacío |
+| `20` con `S/ 0.01`           | `TRANSACCION EXITOSA` y código `"00"`, **ignorando el monto**; sin voucher, sin tarjeta ni billetera, ~6 s |
+
+Conclusión: `20` es el eco/prueba de comunicación y `22` no es una venta QR
+(el equipo la rechaza con y sin monto). Ninguna de las dos cobra por billetera,
+así que el medio se sigue eligiendo en el menú del terminal.
+
+Cuidado al interpretar resultados de diagnóstico: `doTransactionEx` devuelve
+`true` sólo cuando el equipo contestó, nunca cuando aprobó. El veredicto está en
+el tag `DF FF 02` (estado numérico: `0` = salió bien, `3` = falló) y, en las
+operaciones con voucher, en `CodigoRespuesta == "00"`. Las operaciones sin
+voucher (eco, inicializar, cierre) **no traen `DF FF 2F`**, así que para ellas
+`codigo_respuesta` viene nulo y el campo que manda es `estado_resultado`.
+
+##### Inicialización del terminal (`POST /api/v1/pinpad/inicializar`)
+
+Ejecuta la operación `38` (`DC 01 26`), con la que el equipo se conecta al host
+de Niubiz y recarga parámetros. **No cierra el lote** —las ventas pendientes
+siguen en él— pero deja el terminal ocupado mientras negocia: medido en el
+LAN30BA de la caja 01, tarda ~34 s y **falla** cuando no hay a quién conectarse.
+
+```
+ENVÍO     op=38 trama=FC 26 DF FF 25 0A 46 43 39 44 30 35 32 36 46 33 DF FE 53 01 34 …
+RESPUESTA hex=FD 29 DF FF 02 04 03 00 00 00 … DF FF 2C 13 "TRANSACCION FALLIDA" DF FF 34 00
+```
+
+`DF FF 02 04 03 00 00 00` es el estado: **3 = falló** (en el eco es
+`00 00 00 00`). Con `tms_direccion` en `0.0.0.0` el terminal no tiene host de
+inicialización configurado, así que la operación termina en timeout. La respuesta
+completa es:
+
+```json
+{
+  "aprobado": false,
+  "estado_resultado": 3,
+  "mensaje_equipo": "TRANSACCION FALLIDA",
+  "codigo_respuesta": null,
+  "operacion": 38,
+  "respuesta_recibida": true
+}
+```
+
+Tras un intento fallido el equipo queda unos **90 segundos ocupado** y el eco
+puede devolver `doTransactionEx=False` en ese lapso; el enlace se recupera solo
+(verificado con `/probar` a los 20 s). Ni la serie ni los parámetros TMS
+cambiaron después de la prueba.
+
+##### Configuración TMS del terminal (`POST /api/v1/pinpad/parametros`)
+
+Es de **sólo lectura**: no cambia parámetros ni dispara descargas. Devuelve lo
+que el equipo tiene cargado, que es lo que Niubiz pide para verificar la
+habilitación del comercio:
+
+```json
+{
+  "conectado": true,
+  "serie": "190867313011087504219658",
+  "serie_terminal": 69310040,
+  "producto_terminal": 806422645,
+  "tms_ok": true,
+  "tms_direccion": "0.0.0.0",
+  "tms_puerto": "2600",
+  "tms_identificador": "87010139",
+  "tms_ssl_actual": "",
+  "tms_ssl_cantidad": 1
+}
+```
+
+Origen: `getFullSerialNumber`, `getTerminalInfo` y `tmsReadParam` de
+`PCLService.dll`. `tms_direccion` en `0.0.0.0` y puerto `2600` significan que el
+terminal no tiene un servidor TMS propio configurado: usa el de Niubiz por
+defecto. Si `tms_ok` es `false` el equipo no devolvió sus parámetros y el
+diagnóstico hay que hacerlo en el propio terminal. Con una operación en curso
+responde `tms_error` en vez de bloquear el cobro.
+
+Para forzar que el terminal vuelva a bajar aplicación y parámetros desde el TMS
+está `POST /api/v1/pinpad/actualizar-tms`, que llama a `doUpdate`. Es una
+**escritura** sobre el equipo: mientras corre no se puede cobrar (se retiene el
+candado de operación) y si la descarga se corta el terminal puede quedar sin la
+aplicación de Niubiz hasta que el TMS se la vuelva a empujar. Responde `202`
+con `{"iniciada": true}`, o `409` con el `motivo` si el canal no está listo o
+hay un cobro en curso; el desenlace queda en `pinpad.log`. La llamada nativa
+corre en segundo plano porque puede tardar minutos y no se puede cancelar.
+
+Medido en el LAN30BA de la caja 01: `doUpdate` devolvió `ok=True,
+resultado=1`. Según la documentación de PCL en `result` **0 es éxito**, así que
+el terminal no hizo la descarga: el enlace siguió vivo, el eco respondió normal
+y el equipo no se reinició. Con `tms_direccion` en `0.0.0.0` el terminal no
+tiene un servidor TMS propio al que ir, de modo que la actualización hay que
+lanzarla desde el menú del propio equipo o esperar a que Niubiz la empuje.
 
 #### Impresión de comprobante (HTTP)
 

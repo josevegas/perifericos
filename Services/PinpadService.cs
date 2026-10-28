@@ -38,6 +38,7 @@ namespace PuntoVenta.Services
         private const long TagReferenciaAnular = 14679849;   // "invoice number"
         private const long TagCodigoRespuesta = 14679855;    // "00" aprobado, "05" denegada…
         private const long TagMensajeRespuesta = 14679852;   // texto del equipo/banco
+        private const long TagEstadoResultado = 14679810;    // DF FF 02: 0 = OK, 3 = falló
 
         // Medio con el que se cobró. No están en la trama de salida: llegan en la
         // respuesta, y son la única forma de distinguir una billetera de una
@@ -186,6 +187,123 @@ namespace PuntoVenta.Services
         }
 
         /// <summary>
+        /// Lee la configuración TMS del terminal (servidor, puerto, identificador y
+        /// perfil SSL) y sus números de serie.
+        /// </summary>
+        /// <remarks>
+        /// Es de SÓLO LECTURA: no cambia nada en el equipo ni dispara descargas.
+        /// El identificador TMS es lo que Niubiz usa para saber qué aplicación y
+        /// qué parámetros (medios habilitados, billeteras) le corresponden a este
+        /// terminal, así que es el dato que hay que darle al soporte cuando el menú
+        /// de Yape/Plin no aparece.
+        /// </remarks>
+        public Dictionary<string, object> ConsultarParametrosTms()
+        {
+            var datos = new Dictionary<string, object>();
+            datos["conectado"] = EstaConectado();
+            datos["serie"] = LeerSerieDelEquipo();
+
+            var equipo = new PCLdll.spmInfo_t();
+            if (PCLdll.getTerminalInfo(equipo))
+            {
+                datos["serie_terminal"] = equipo.dwSerialNumber;
+                datos["producto_terminal"] = equipo.dwProductNumber;
+            }
+
+            if (!CandadoOperacion.Wait(0))
+            {
+                datos["tms_error"] = "Hay una operación en curso en el pinpad; reintente cuando termine.";
+                return datos;
+            }
+
+            try
+            {
+                var direccion = new StringBuilder(258);
+                var puerto = new StringBuilder(6);
+                var identificador = new StringBuilder(16);
+                var ssl = new PCLdll.tms_ssl_parameter_t();
+                var estado = new StringBuilder(8);
+                bool ok = PCLdll.tmsReadParam(
+                    direccion, 258, puerto, 6, identificador, 16, ssl, estado);
+
+                datos["tms_ok"] = ok;
+                datos["tms_estado"] = estado.ToString();
+                datos["tms_direccion"] = direccion.ToString();
+                datos["tms_puerto"] = puerto.ToString();
+                datos["tms_identificador"] = identificador.ToString();
+                datos["tms_ssl_actual"] = ssl.current_ssl_profile;
+                datos["tms_ssl_cantidad"] = ssl.nb_ssl_profile;
+
+                Log("TMS ok=" + ok + " dir=" + datos["tms_direccion"] + " puerto=" + datos["tms_puerto"]
+                    + " id=" + datos["tms_identificador"] + " ssl=" + datos["tms_ssl_actual"]);
+            }
+            catch (Exception ex)
+            {
+                datos["tms_error"] = ex.Message;
+                Log("TMS ERROR " + ex.Message);
+            }
+            finally
+            {
+                CandadoOperacion.Release();
+            }
+
+            return datos;
+        }
+
+        /// <summary>
+        /// Lanza una actualización Telium: el terminal vuelve a bajar aplicación y
+        /// parámetros desde su TMS.
+        /// </summary>
+        /// <remarks>
+        /// Es una ESCRITURA sobre el equipo, no un diagnóstico. Mientras corre no
+        /// se puede cobrar (se retiene el candado de operación) y si la descarga
+        /// se corta el terminal puede quedar sin la aplicación de Niubiz hasta que
+        /// el TMS se la vuelva a empujar. Se lanza en segundo plano porque la
+        /// llamada nativa puede tardar minutos y no se puede cancelar.
+        /// </remarks>
+        public Dictionary<string, object> IniciarActualizacionTms()
+        {
+            var datos = new Dictionary<string, object>();
+
+            if (!EstaConectado())
+            {
+                datos["iniciada"] = false;
+                datos["motivo"] = "El canal PCL no está listo.";
+                return datos;
+            }
+
+            if (!CandadoOperacion.Wait(0))
+            {
+                datos["iniciada"] = false;
+                datos["motivo"] = "Hay una operación en curso en el pinpad.";
+                return datos;
+            }
+
+            datos["iniciada"] = true;
+            Log("TMS UPDATE solicitado");
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    uint resultado = 0;
+                    bool ok = PCLdll.doUpdate(ref resultado);
+                    Log("TMS UPDATE terminó ok=" + ok + " resultado=" + resultado);
+                }
+                catch (Exception ex)
+                {
+                    Log("TMS UPDATE ERROR " + ex.Message);
+                }
+                finally
+                {
+                    CandadoOperacion.Release();
+                }
+            });
+
+            return datos;
+        }
+
+        /// <summary>
         /// Drena mensajes espontáneos del equipo (el legacy lo hacía en cada tick;
         /// mantiene sano el canal). Devuelve el mensaje si hubo alguno.
         /// </summary>
@@ -280,12 +398,7 @@ namespace PuntoVenta.Services
         /// </summary>
         public Task<CobroTarjetaResultado> CobrarAsync(decimal monto)
         {
-            if (monto <= 0)
-                throw new ArgumentException("El monto debe ser mayor a cero.", nameof(monto));
-
-            decimal montoRedondeado = decimal.Round(monto, 2, MidpointRounding.AwayFromZero);
-            if (montoRedondeado > 9999999999.99m)
-                throw new ArgumentOutOfRangeException(nameof(monto), "El monto excede el máximo admitido por el pinpad.");
+            decimal montoRedondeado = NormalizarMonto(monto);
 
             if (!EstaConectado() && !Conectar())
             {
@@ -295,8 +408,7 @@ namespace PuntoVenta.Services
                 });
             }
 
-            long centavos = decimal.ToInt64(montoRedondeado * 100m);
-            return ConEspera(OperacionCompra, centavos, null, EsperaCobro);
+            return ConEspera(OperacionCompra, montoRedondeado, null, EsperaCobro);
         }
 
         /// <summary>
@@ -306,7 +418,7 @@ namespace PuntoVenta.Services
         /// marcada como huérfana y se impide lanzar otra hasta reiniciar la aplicación.
         /// </summary>
         private async Task<CobroTarjetaResultado> ConEspera(
-            long operacion, long? centavos, string referencia, TimeSpan espera)
+            long operacion, decimal? monto, string referencia, TimeSpan espera)
         {
             if (_operacionHuerfana)
             {
@@ -329,7 +441,7 @@ namespace PuntoVenta.Services
             Task<CobroTarjetaResultado> operacionEnCurso;
             try
             {
-                operacionEnCurso = Task.Run(() => EjecutarOperacion(operacion, centavos, referencia));
+                operacionEnCurso = Task.Run(() => EjecutarOperacion(operacion, monto, referencia));
             }
             catch
             {
@@ -410,15 +522,26 @@ namespace PuntoVenta.Services
         }
 
         /// <summary>Inicialización del terminal con el host de Niubiz (descarga de parámetros).</summary>
-        public Task<CobroTarjetaResultado> InicializarAsync() =>
-            ConEspera(OperacionInicializar, null, null, EsperaCobro);
+        public async Task<CobroTarjetaResultado> InicializarAsync()
+        {
+            if (!EstaConectado() && !Conectar())
+            {
+                return new CobroTarjetaResultado
+                {
+                    MensajeError = "No se pudo establecer el canal PCL con el pinpad.",
+                };
+            }
+
+            return await ConEspera(
+                OperacionInicializar, null, null, EsperaCobro).ConfigureAwait(false);
+        }
 
         /// <summary>Cierre de lote del terminal.</summary>
         public Task<CobroTarjetaResultado> CierreAsync() =>
             ConEspera(OperacionCierre, null, null, EsperaCobro);
 
         private CobroTarjetaResultado EjecutarOperacion(
-            long operacion, long? centavos, string referenciaAnular = null)
+            long operacion, decimal? monto, string referenciaAnular = null)
         {
             var resultado = new CobroTarjetaResultado();
 
@@ -430,7 +553,7 @@ namespace PuntoVenta.Services
                 return resultado;
             }
 
-            string trama = ArmarTrama(operacion, centavos, referenciaAnular);
+            string trama = ArmarTrama(operacion, monto, referenciaAnular);
             Log("ENVÍO op=" + operacion + " trama=" + TLVClass.ToHex(trama));
             // OJO: la trama TLV trae bytes ALTOS (el tag padre es 0xFC). La
             // conversión debe ser byte↔carácter 1 a 1 (Latin-1); con ASCII todo
@@ -456,11 +579,38 @@ namespace PuntoVenta.Services
             resultado.RespuestaCruda = TLVClass.ToHex(respuesta);
             Log("RESPUESTA hex=" + resultado.RespuestaCruda);
 
-            // Diagnóstico (eco/inicializar/cierre): basta con que el equipo
-            // conteste — no hay voucher que interpretar.
+            // Diagnóstico (eco/inicializar/cierre): no hay voucher, pero el
+            // equipo sí reporta código y texto. doTransactionEx=true sólo
+            // significa "contestó": la op 22 respondía "TRANSACCION FALLIDA"
+            // con código 03 y quedaba reportada como aprobada.
             if (operacion != OperacionCompra && operacion != OperacionAnulacion)
             {
-                resultado.Aprobado = true;
+                try
+                {
+                    var tlvDiagnostico = new TLVClass(respuesta);
+                    XElement raizDiagnostico = tlvDiagnostico.GetParentElement();
+                    resultado.CodigoRespuesta =
+                        LeerTexto(tlvDiagnostico, raizDiagnostico, TagCodigoRespuesta);
+                    resultado.MensajeEquipo =
+                        LeerTexto(tlvDiagnostico, raizDiagnostico, TagMensajeRespuesta);
+                    resultado.EstadoResultado =
+                        LeerEstado(tlvDiagnostico, raizDiagnostico, TagEstadoResultado);
+                }
+                catch (Exception ex)
+                {
+                    // Trama inesperada: el equipo contestó, pero no se pudo leer.
+                    Log("DIAGNÓSTICO op=" + operacion + " no se pudo interpretar: " + ex.Message);
+                }
+
+                // DF FF 02 es el veredicto del equipo para estas operaciones: 0 es
+                // lo único que significa "salió bien". Si no vino, se cae al código
+                // de respuesta clásico ("00").
+                resultado.Aprobado = resultado.EstadoResultado.HasValue
+                    ? resultado.EstadoResultado.Value == 0
+                    : resultado.CodigoRespuesta == RespuestaAprobada;
+                Log("DIAGNÓSTICO op=" + operacion + " estado=" + resultado.EstadoResultado +
+                    " codigo=" + resultado.CodigoRespuesta + " mensaje=" + resultado.MensajeEquipo +
+                    " aprobado=" + resultado.Aprobado);
                 return resultado;
             }
 
@@ -519,6 +669,30 @@ namespace PuntoVenta.Services
         }
 
         /// <summary>
+        /// Estado de la operación (DF FF 02), que llega como entero de 4 bytes
+        /// big-endian: "03000000" es 3 (falló) y "00000000" es 0 (salió bien).
+        /// El estado útil es el byte más significativo, o sea el primero del hex.
+        /// </summary>
+        private static int? LeerEstado(TLVClass tlv, XElement raiz, long tag)
+        {
+            XElement elemento = tlv.GetTLVElement(raiz, tag);
+            if (elemento == null) return null;
+
+            string hex = (tlv.GetTLVValue(elemento) ?? string.Empty).Replace(" ", string.Empty);
+            if (hex.Length < 2) return null;
+
+            int valor;
+            if (!int.TryParse(
+                    hex.Substring(0, 2),
+                    System.Globalization.NumberStyles.HexNumber,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out valor))
+                return null;
+
+            return valor;
+        }
+
+        /// <summary>
         /// Lee un tag que el equipo manda DENTRO de un contenedor (DF FF 34):
         /// el parser de TLV no aplana a los hijos, así que hay que bajar al nodo
         /// padre antes de buscarlo.
@@ -563,11 +737,41 @@ namespace PuntoVenta.Services
         }
 
         /// <summary>
+        /// Arma la trama TLV que se envía al equipo para cobrar <paramref name="monto"/>,
+        /// sin enviar nada ni necesitar el pinpad conectado: sirve para inspeccionar
+        /// el mensaje real (p. ej. volcarlo a la bitácora o compararlo con Niubiz).
+        ///
+        /// Ojo con la forma: NO es texto plano ni un prefijo de operación. Es un
+        /// documento TLV con tag padre <c>0xFC</c>, tags binarios de 3 bytes
+        /// (<c>DF FF 25</c>…) y el monto en centavos BCD de 6 bytes, no en dígitos
+        /// ASCII. La operación viaja aparte, en su propio tag y como un byte.
+        /// </summary>
+        public static string ConstruirTramaPCL(decimal monto) =>
+            ArmarTrama(OperacionCompra, monto);
+
+        /// <summary>Redondea a centavos y valida contra los límites del protocolo.</summary>
+        private static decimal NormalizarMonto(decimal monto)
+        {
+            if (monto <= 0)
+                throw new ArgumentException("El monto debe ser mayor a cero.", nameof(monto));
+
+            decimal montoRedondeado = decimal.Round(monto, 2, MidpointRounding.AwayFromZero);
+            if (montoRedondeado > 9999999999.99m)
+                throw new ArgumentOutOfRangeException(nameof(monto), "El monto excede el máximo admitido por el pinpad.");
+
+            return montoRedondeado;
+        }
+
+        /// <summary>Centavos tal como los espera el tag del monto (formato D12).</summary>
+        private static long ACentavos(decimal monto) =>
+            decimal.ToInt64(NormalizarMonto(monto) * 100m);
+
+        /// <summary>
         /// Arma la trama TLV con los mismos tags y valores del legacy.
         /// Monto y cuotas solo viajan en la COMPRA; la referencia, solo en la
         /// ANULACIÓN (identifica qué operación del lote se deshace).
         /// </summary>
-        private static string ArmarTrama(long operacion, long? centavos, string referenciaAnular = null)
+        private static string ArmarTrama(long operacion, decimal? monto, string referenciaAnular = null)
         {
             var tlv = new TLVClass(TagPadre);
             XElement raiz = tlv.GetParentElement();
@@ -585,9 +789,9 @@ namespace PuntoVenta.Services
             tlv.AddTLVInteger(ref raiz, TagHora, long.Parse(ahora.ToString("HHmmss")));
             tlv.AddTLVByte(ref raiz, TagOperacion, operacion);
             tlv.AddTLVString(ref raiz, TagCashierNumber, "1");
-            if (centavos.HasValue)
+            if (monto.HasValue)
             {
-                tlv.AddTLVInteger(ref raiz, TagMonto, centavos.Value, "D12");
+                tlv.AddTLVInteger(ref raiz, TagMonto, ACentavos(monto.Value), "D12");
                 tlv.AddTLVInteger(ref raiz, TagCuotas, 0);
             }
             if (!string.IsNullOrEmpty(referenciaAnular))

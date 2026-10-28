@@ -30,6 +30,9 @@ namespace PuntoVenta.Perifericos.Host
         private const string RutaCobro = "/api/v1/pinpad/cobrar";
         private const string RutaAnulacion = "/api/v1/pinpad/anular";
         private const string RutaPruebaPinpad = "/api/v1/pinpad/probar";
+        private const string RutaParametrosTms = "/api/v1/pinpad/parametros";
+        private const string RutaActualizarTms = "/api/v1/pinpad/actualizar-tms";
+        private const string RutaInicializar = "/api/v1/pinpad/inicializar";
         private const string RutaComprobante = "/api/v1/impresion/comprobante";
         private const string RutaGaveta = "/api/v1/impresion/gaveta";
         private const string RutaEstado = "/api/v1/impresion/estado";
@@ -121,6 +124,15 @@ namespace PuntoVenta.Perifericos.Host
                     case RutaPruebaPinpad:
                         await AtenderPruebaPinpadAsync(contexto);
                         return;
+                    case RutaParametrosTms:
+                        await AtenderParametrosTmsAsync(contexto);
+                        return;
+                    case RutaActualizarTms:
+                        await AtenderActualizarTmsAsync(contexto);
+                        return;
+                    case RutaInicializar:
+                        await AtenderInicializarAsync(contexto);
+                        return;
                     case RutaComprobante:
                         await AtenderComprobanteAsync(contexto);
                         return;
@@ -192,6 +204,49 @@ namespace PuntoVenta.Perifericos.Host
                 { "respuesta_recibida", respuestaRecibida },
                 { "mensaje_error", resultado.MensajeError },
             });
+        }
+
+        /// <summary>
+        /// Configuración TMS del terminal y números de serie. Sólo lectura: sirve
+        /// para contrastar con Niubiz si el comercio tiene habilitadas las
+        /// billeteras que muestra el equipo.
+        /// </summary>
+        private async Task AtenderParametrosTmsAsync(HttpListenerContext contexto)
+        {
+            Dictionary<string, object> datos = _pinpad.ConsultarParametrosTms();
+            await ResponderAsync(contexto, 200, datos);
+        }
+
+        /// <summary>
+        /// Fuerza una descarga TMS en el terminal. Es una escritura: mientras el
+        /// equipo actualiza no se puede cobrar.
+        /// </summary>
+        private async Task AtenderActualizarTmsAsync(HttpListenerContext contexto)
+        {
+            Dictionary<string, object> datos = _pinpad.IniciarActualizacionTms();
+            await ResponderAsync(contexto, datos.ContainsKey("iniciada") && (bool)datos["iniciada"] ? 202 : 409, datos);
+        }
+
+        /// <summary>
+        /// Inicialización del terminal (operación 38): el equipo se conecta al
+        /// host de Niubiz y recarga parámetros. No cierra el lote — la venta
+        /// pendiente sigue en él — pero sí deja el equipo ocupado unos segundos.
+        /// </summary>
+        private async Task AtenderInicializarAsync(HttpListenerContext contexto)
+        {
+            if (!CuerpoDentroDelLimite(contexto, MaximoCuerpoCortoBytes))
+            {
+                await ResponderAsync(
+                    contexto, 413, Error("El cuerpo de la solicitud excede el tamaño permitido."));
+                return;
+            }
+
+            CobroTarjetaResultado resultado = await _pinpad.InicializarAsync().ConfigureAwait(false);
+            Dictionary<string, object> datos = ConvertirResultado(resultado);
+            datos["operacion"] = 38;
+            datos["respuesta_recibida"] = !string.IsNullOrEmpty(resultado.RespuestaCruda);
+
+            await ResponderAsync(contexto, 200, datos);
         }
 
         private async Task AtenderCobroAsync(HttpListenerContext contexto)
@@ -991,6 +1046,7 @@ namespace PuntoVenta.Perifericos.Host
                 { "voucher_cliente", resultado.VoucherCliente },
                 { "mensaje_error", resultado.MensajeError },
                 { "codigo_respuesta", resultado.CodigoRespuesta },
+                { "estado_resultado", resultado.EstadoResultado },
                 { "mensaje_equipo", resultado.MensajeEquipo },
                 { "marca_equipo", resultado.MarcaEquipo },
                 { "tipo_cuenta", resultado.TipoCuenta },

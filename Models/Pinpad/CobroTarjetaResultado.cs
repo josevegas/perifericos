@@ -39,6 +39,14 @@
         /// <summary>Código de respuesta del equipo/banco: "00" aprobado, "05" denegada…</summary>
         public string CodigoRespuesta { get; set; }
 
+        /// <summary>
+        /// Estado numérico del equipo (tag DF FF 02): 0 = la operación salió bien,
+        /// cualquier otro valor = falló. Es el ÚNICO indicador para las operaciones
+        /// sin voucher (eco, inicialización, cierre): ahí no viene DF FF 2F, así que
+        /// sin esto una inicialización fallida se reportaba como aprobada.
+        /// </summary>
+        public int? EstadoResultado { get; set; }
+
         /// <summary>Texto que devolvió el equipo (ej. "DENEGADA", "TRANSACCION EXITOSA").</summary>
         public string MensajeEquipo { get; set; }
 
